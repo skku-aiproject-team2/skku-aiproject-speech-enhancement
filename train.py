@@ -37,7 +37,7 @@ import torch
 import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 
-import time
+import tqdm 
 
 import random
 random.seed(0)
@@ -142,11 +142,12 @@ def train(num_gpus, rank, group_name,
         mrstftloss = MultiResolutionSTFTLoss(**loss_config["stft_config"]).cuda()
     else:
         mrstftloss = None
-
+    
+    # set tqdm, total = n_iters with no iterator
+    pbar = tqdm.tqdm(total=optimization["n_iters"], initial=n_iter, dynamic_ncols=True)
     while n_iter < optimization["n_iters"] + 1:
         # for each epoch
         for clean_audio, noisy_audio, _ in trainloader: 
-            start_time = time.time()
             
             clean_audio = clean_audio.cuda()
             noisy_audio = noisy_audio.cuda()
@@ -190,10 +191,9 @@ def train(num_gpus, rank, group_name,
                             'training_time_seconds': int(time.time()-time0)}, 
                             os.path.join(ckpt_directory, checkpoint_name))
                 print('model at iteration %s is saved' % n_iter)
-
-            end_time = time.time()
-            print("Time: ", end_time - start_time)
+                
             n_iter += 1
+            pbar.update(1)
 
     # After training, close TensorBoard.
     if rank == 0:
