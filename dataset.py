@@ -34,33 +34,21 @@ class CleanNoisyPairDataset(Dataset):
         self.crop_length_sec = crop_length_sec
         self.subset = subset
 
-        # N_clean = len(os.listdir(os.path.join(root, 'training_set/clean')))
-        # N_noisy = len(os.listdir(os.path.join(root, 'training_set/noisy')))
-        # assert N_clean == N_noisy
-
-        # if subset == "training":
-        #     self.files = [(os.path.join(root, 'training_set/clean', 'fileid_{}.wav'.format(i)),
-        #                    os.path.join(root, 'training_set/noisy', 'fileid_{}.wav'.format(i))) for i in range(N_clean)]
+        N_clean = len(os.listdir(os.path.join(root, 'train/clean')))
+        N_noisy = len(os.listdir(os.path.join(root, 'train/noisy')))
+        assert N_clean == N_noisy
         
-        # elif subset == "testing":
-        sortkey = lambda name: '_'.join(name.split('_')[-2:])  # specific for dns due to test sample names
-        _p = os.path.join(root, 'datasets/test_set/synthetic/no_reverb')  # path for DNS
-        
-        clean_files = os.listdir(os.path.join(_p, 'clean'))
-        noisy_files = os.listdir(os.path.join(_p, 'noisy'))
-        
-        clean_files.sort(key=sortkey)
-        noisy_files.sort(key=sortkey)
+        if subset == "training":
+            _p = os.path.join(root, 'train/')
+        elif subset == "testing":
+            _p = os.path.join(root, 'test/')
+        else:
+            raise NotImplementedError
 
-        self.files = []
-        for _c, _n in zip(clean_files, noisy_files):
-            assert sortkey(_c) == sortkey(_n)
-            self.files.append((os.path.join(_p, 'clean', _c), 
-                                os.path.join(_p, 'noisy', _n)))
-        self.crop_length_sec = 0
-
-        # else:
-        #     raise NotImplementedError
+        clean_files = sorted(os.listdir(os.path.join(_p, 'clean')))
+        noisy_files = sorted(os.listdir(os.path.join(_p, 'noisy')))
+        
+        self.files = [(os.path.join(_p, 'clean', f), os.path.join(_p, 'noisy', f)) for f in clean_files]
 
     def __getitem__(self, n):
         fileid = self.files[n]
