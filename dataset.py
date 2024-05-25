@@ -30,7 +30,7 @@ class CleanNoisyPairDataset(Dataset):
     def __init__(self, root='./', subset='training', crop_length_sec=0):
         super(CleanNoisyPairDataset).__init__()
 
-        assert subset is None or subset in ["training", "testing"]
+        assert subset is None or subset in ["training", "testing", "validation"]
         self.crop_length_sec = crop_length_sec
         self.subset = subset
 
@@ -42,6 +42,8 @@ class CleanNoisyPairDataset(Dataset):
             _p = os.path.join(root, 'train/')
         elif subset == "testing":
             _p = os.path.join(root, 'test/')
+        elif subset == "validation":
+            _p = os.path.join(root, 'valid/')
         else:
             raise NotImplementedError
 

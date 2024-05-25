@@ -37,7 +37,7 @@ import torch
 import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 
-import tqdm 
+from tqdm import tqdm
 
 import random
 random.seed(0)
@@ -84,6 +84,12 @@ def train(num_gpus, rank, group_name,
                             subset='training',
                             batch_size=optimization["batch_size_per_gpu"], 
                             num_gpus=num_gpus)
+
+    validloader = load_CleanNoisyPairDataset(**trainset_config,
+                            subset='validation',
+                            batch_size=optimization["batch_size_per_gpu"], 
+                            num_gpus=num_gpus)
+
     print('Data loaded')
     
     # predefine model
@@ -143,8 +149,7 @@ def train(num_gpus, rank, group_name,
     else:
         mrstftloss = None
     
-    # set tqdm, total = n_iters with no iterator
-    pbar = tqdm.tqdm(total=optimization["n_iters"], initial=n_iter, dynamic_ncols=True)
+    pbar = tqdm(total=optimization["n_iters"], initial=n_iter, dynamic_ncols=True)
     while n_iter < optimization["n_iters"] + 1:
         # for each epoch
         for clean_audio, noisy_audio, _ in trainloader: 
@@ -172,15 +177,28 @@ def train(num_gpus, rank, group_name,
 
             # output to log
             if n_iter % log["iters_per_valid"] == 0:
-                print("iteration: {} \treduced loss: {:.7f} \tloss: {:.7f}".format(
-                    n_iter, reduced_loss, loss.item()), flush=True)
+
+                # validation
+                with torch.no_grad():
+                    valid_loss = 0
+                    for clean_audio, noisy_audio, _ in tqdm(validloader, desc='Validation'):
+                        clean_audio = clean_audio.cuda()
+                        noisy_audio = noisy_audio.cuda()
+                        X = (clean_audio, noisy_audio)
+                        loss, loss_dic = loss_fn(net, X, **loss_config, mrstftloss=mrstftloss)
+                        valid_loss += loss.item()
+                    valid_loss /= len(validloader)
+
+                # print train and valid loss
+                print("\niteration: {} \treduced loss: {:.7f} \tloss: {:.7f} \tvalid loss: {:.7f}".format(
+                    n_iter, reduced_loss, loss.item(), valid_loss), flush=True)
                 
-                if rank == 0:
-                    # save to tensorboard
-                    tb.add_scalar("Train/Train-Loss", loss.item(), n_iter)
-                    tb.add_scalar("Train/Train-Reduced-Loss", reduced_loss, n_iter)
-                    tb.add_scalar("Train/Gradient-Norm", grad_norm, n_iter)
-                    tb.add_scalar("Train/learning-rate", optimizer.param_groups[0]["lr"], n_iter)
+                # write to tensorboard
+                tb.add_scalar("Valid/Valid-Loss", valid_loss, n_iter)
+                tb.add_scalar("Train/Train-Loss", loss.item(), n_iter)
+                tb.add_scalar("Train/Train-Reduced-Loss", reduced_loss, n_iter)
+                tb.add_scalar("Train/Gradient-Norm", grad_norm, n_iter)
+                tb.add_scalar("Train/learning-rate", optimizer.param_groups[0]["lr"], n_iter)
 
             # save checkpoint
             if n_iter > 0 and n_iter % log["iters_per_ckpt"] == 0 and rank == 0:
@@ -190,8 +208,8 @@ def train(num_gpus, rank, group_name,
                             'optimizer_state_dict': optimizer.state_dict(),
                             'training_time_seconds': int(time.time()-time0)}, 
                             os.path.join(ckpt_directory, checkpoint_name))
-                print('model at iteration %s is saved' % n_iter)
-                
+                print('\nmodel at iteration %s is saved' % n_iter)
+
             n_iter += 1
             pbar.update(1)
 
