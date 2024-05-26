@@ -9,8 +9,6 @@ through a set of losses defined over both waveform and multi-resolution spectrog
 the state-of-the-art models in terms of denoised speech quality
 from various objective and subjective evaluation metrics. Sound demos can be found in [This blog](https://nv-adlr.github.io/projects/cleanunet/).
 
-///kmg
-
 ## Dataset Description
 
 ### Overview of Valentini Dataset
@@ -72,8 +70,6 @@ When training, a random crop of 3 seconds is taken from the audio. To check for 
 #### Handling Short Audio Clips
 
 To address short audio clips (around 1 second) in the Valentini dataset, adjustments were made to ensure consistent processing. Both train and test datasets contain 4-second .wav files.
-
-///kmg
 
 ## Training
 
