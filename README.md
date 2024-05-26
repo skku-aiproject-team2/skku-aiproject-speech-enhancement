@@ -1,13 +1,11 @@
-# Pytorch Implementation of CleanUNet
+## Purpose of this project
 
-This repo contains official PyTorch implementation of CleanUNet: [Speech Denoising in the Waveform Domain with Self-Attention](https://arxiv.org/abs/2202.07790). CleanUNet is a causal speech denoising
-model on the raw waveform. It is based
-on an encoder-decoder architecture combined with several
-self-attention blocks to refine its bottleneck representations,
-which is crucial to obtain good results. The model is optimized
-through a set of losses defined over both waveform and multi-resolution spectrograms. The proposed method outperforms
-the state-of-the-art models in terms of denoised speech quality
-from various objective and subjective evaluation metrics. Sound demos can be found in [This blog](https://nv-adlr.github.io/projects/cleanunet/).
+### online lectures in Sungkyunkwan University
+Many courses at Sungkyunkwan University are currently conducted through recorded online lectures, and even for offline classes, recorded lectures are often provided. However, most of these recordings are done in general classrooms or offices without proper audio equipment or noise control, rather than in a professional studio environment. This leads to the intrusion of student or external noise during lectures, resulting in poor audio quality, which in turn makes it difficult for students to follow the lectures and maintain concentration. This issue is particularly problematic for major courses conducted in English, where students who are not familiar with English speakers or technical terms may find it even harder to recognize pronunciations when noise is present. 
+
+### Our goal : cpu inference 최적화 정리되면 수정하기
+We have selected CleanUNet(https://github.com/NVIDIA/CleanUNet) as the baseline model for audio enhancement. Our goal is to use this model to improve the audio quality and subsequently measure the improvement in audio clarity. Furthermore, we aim to enhance the performance of the baseline model and compare the results with the original CleanUNet baseline.
+
 
 ## Dataset Description
 
