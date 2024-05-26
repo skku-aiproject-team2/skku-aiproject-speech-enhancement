@@ -1,1 +1,5 @@
+<<<<<<< HEAD
 *.pkl filter=lfs diff=lfs merge=lfs -text
+=======
+*.wav filter=lfs diff=lfs merge=lfs -text
+>>>>>>> b586ad6 (Added Valentini dataset description in README.md)
