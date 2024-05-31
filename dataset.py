@@ -60,7 +60,9 @@ class CleanNoisyPairDataset(Dataset):
         assert len(clean_audio) == len(noisy_audio)
 
         crop_length = int(self.crop_length_sec * sample_rate)
-        assert crop_length < len(clean_audio)
+        
+        if crop_length > len(clean_audio):
+            crop_length = len(clean_audio)
 
         # random crop
         if self.subset != 'testing' and crop_length > 0:

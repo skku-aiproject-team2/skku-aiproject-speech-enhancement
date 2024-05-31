@@ -36,6 +36,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
+from torch.quantization import prepare_qat, convert
 
 from tqdm import tqdm
 
@@ -51,14 +52,22 @@ from dataset import load_CleanNoisyPairDataset
 from stft_loss import MultiResolutionSTFTLoss
 from util import rescale, find_max_epoch, print_size
 from util import LinearWarmupCosineDecay, loss_fn
-import wandb
-import time
-import datetime
-
-from torch.cuda.amp import GradScaler, autocast
 
 from network import CleanUNet
 
+def fuse_modules(model):
+    for module in model.encoder:
+        if isinstance(module, nn.Sequential):
+            torch.quantization.fuse_modules(module, ['0', '1'], inplace=True)
+    for module in model.decoder:
+        if isinstance(module, nn.Sequential):
+            if 'ReLU' in str(module[-1]):  # Fuse only if the last layer is ReLU
+                torch.quantization.fuse_modules(module, ['0', '3'], inplace=True)
+            # layers_to_fuse = ['0', '2']
+            # if len(module) == 4:
+            #     layers_to_fuse.append('3')
+            # torch.quantization.fuse_modules(module, layers_to_fuse, inplace=True)
+    return model
 
 def train(num_gpus, rank, group_name, 
           exp_path, log, optimization, loss_config):
@@ -71,11 +80,6 @@ def train(num_gpus, rank, group_name,
     log_directory = os.path.join(log["directory"], exp_path)
     if rank == 0:
         tb = SummaryWriter(os.path.join(log_directory, 'tensorboard'))
-        wandb.init(project="AI_project", config={
-            "exp_path": exp_path,
-            **optimization,
-            **loss_config,
-        })
 
     # distributed running initialization
     if num_gpus > 1:
@@ -110,9 +114,21 @@ def train(num_gpus, rank, group_name,
     if num_gpus > 1:
         net = apply_gradient_allreduce(net)
 
+    # quantization
+    net.train()
+    net.qconfig = torch.quantization.get_default_qat_qconfig('fbgemm')
+    # Override qconfig for ConvTranspose1d to avoid per-channel quantization
+    for name, module in net.named_modules():
+        if isinstance(module, nn.ConvTranspose1d):
+            module.qconfig = torch.quantization.QConfig(
+                activation=torch.quantization.default_fake_quant,
+                weight=torch.quantization.default_weight_fake_quant
+            )
+    net = fuse_modules(net)
+    net = torch.quantization.prepare_qat(net)
+
     # define optimizer
     optimizer = torch.optim.Adam(net.parameters(), lr=optimization["learning_rate"])
-    scaler = GradScaler()
 
     # load checkpoint
     time0 = time.time()
@@ -120,7 +136,6 @@ def train(num_gpus, rank, group_name,
         ckpt_iter = find_max_epoch(ckpt_directory)
     else:
         ckpt_iter = log["ckpt_iter"]
-
     if ckpt_iter >= 0:
         try:
             # load checkpoint file
@@ -162,9 +177,6 @@ def train(num_gpus, rank, group_name,
         mrstftloss = None
     
     pbar = tqdm(total=optimization["n_iters"], initial=n_iter, dynamic_ncols=True)
-    
-    start = time.time()
-
     while n_iter < optimization["n_iters"] + 1:
         # for each epoch
         for clean_audio, noisy_audio, _ in trainloader: 
@@ -185,33 +197,20 @@ def train(num_gpus, rank, group_name,
                 reduced_loss = reduce_tensor(loss.data, num_gpus).item()
             else:
                 reduced_loss = loss.item()
-                
-            scaler.scale(loss).backward()
-
-            # scaler.unscale_(optimizer)  # Unscale the gradients before clipping
-            # grad_norm = nn.utils.clip_grad_norm_(net.parameters(), 1e9)
-    
-            scaler.step(optimizer)
-            scaler.update()
+            loss.backward()
+            grad_norm = nn.utils.clip_grad_norm_(net.parameters(), 1e9)
             scheduler.step()
-            
-            # loss.backward()
-            # grad_norm = nn.utils.clip_grad_norm_(net.parameters(), 1e9)
-            # scheduler.step()
-            # optimizer.step()
+            optimizer.step()
 
-            if rank == 0:
-                wandb.log({
-                    "Train/Train-Loss": loss.item(),
-                    "Train/Train-Reduced-Loss": reduced_loss,
-                    # "Train/Gradient-Norm": grad_norm,
-                    "Train/Learning-Rate": optimizer.param_groups[0]["lr"],
-                    "Iteration": n_iter
-                })
-                
             # output to log
             if n_iter % log["iters_per_valid"] == 0:
-
+                # quantization
+                net.cpu()
+                net.eval()
+                net = torch.quantization.convert(net)
+                print("After Quantization:")
+                print_size(net)
+                assert 0
                 # validation
                 with torch.no_grad():
                     valid_loss = 0
@@ -231,12 +230,8 @@ def train(num_gpus, rank, group_name,
                 tb.add_scalar("Valid/Valid-Loss", valid_loss, n_iter)
                 tb.add_scalar("Train/Train-Loss", loss.item(), n_iter)
                 tb.add_scalar("Train/Train-Reduced-Loss", reduced_loss, n_iter)
-                # tb.add_scalar("Train/Gradient-Norm", grad_norm, n_iter)
+                tb.add_scalar("Train/Gradient-Norm", grad_norm, n_iter)
                 tb.add_scalar("Train/learning-rate", optimizer.param_groups[0]["lr"], n_iter)
-                wandb.log({
-                        "Valid/Valid-Loss": valid_loss,
-                        "Iteration": n_iter
-                    })
 
             # save checkpoint
             if n_iter > 0 and n_iter % log["iters_per_ckpt"] == 0 and rank == 0:
@@ -250,15 +245,13 @@ def train(num_gpus, rank, group_name,
 
             n_iter += 1
             pbar.update(1)
+            # quantization
+            net.cuda()
 
-    end = time.time()
-    sec = end-start
-    result_list = str(datetime.timedelta(seconds=sec)).split(".")
-    print(result_list[0])
     # After training, close TensorBoard.
     if rank == 0:
         tb.close()
-
+    
     return 0
 
 

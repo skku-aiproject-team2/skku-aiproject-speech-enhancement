@@ -13,16 +13,16 @@
         "tsfm_d_inner": 2048
     },
     "train_config": {
-        "exp_path": "DNS-large-full",
+        "exp_path": "valentini",
         "log":{
             "directory": "./exp",
-            "ckpt_iter": "max",
-            "iters_per_ckpt": 2500,
+            "ckpt_iter": 0,
+            "iters_per_ckpt": 25000,
             "iters_per_valid": 500
         },
         "optimization":{
-            "n_iters": 100000,
-            "learning_rate": 2e-7,
+            "n_iters": 200000,
+            "learning_rate": 2e-5,
             "batch_size_per_gpu": 8
         },
         "loss_config":{
@@ -40,8 +40,8 @@
         }
     },
     "trainset_config": {
-        "root": "../CleanUNet/dataset",
-        "crop_length_sec": 3,
+        "root": "../CleanUNet/dataset_mini_5percent",
+        "crop_length_sec": 1,
         "sample_rate": 48000
     },
     "gen_config":{

@@ -6,6 +6,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.quantization import QuantStub, DeQuantStub
+
 
 from util import weight_scaling_init
 
@@ -27,14 +29,41 @@ class ScaledDotProductAttention(nn.Module):
         attn = torch.matmul(q / self.temperature, k.transpose(2, 3))
 
         if mask is not None:
-            # attn = attn.masked_fill(mask == 0, -1e9)
-            attn = attn.float().masked_fill(mask == 0, float('-1e9')).type_as(attn)
+            attn = attn.masked_fill(mask == 0, -1e9)
 
         attn = self.dropout(F.softmax(attn, dim=-1))
         output = torch.matmul(attn, v)
 
         return output, attn
 
+class InstantLayerNormalization(nn.Module):
+    '''
+    Class implementing instant layer normalization. It can also be called 
+    channel-wise layer normalization and was proposed by 
+    Luo & Mesgarani (https://arxiv.org/abs/1809.07454v2) 
+    '''
+
+    def __init__(self, epsilon=1e-7):
+        super(InstantLayerNormalization, self).__init__()
+        self.epsilon = epsilon
+        self.gamma = None
+        self.beta = None
+
+    def build(self, input_shape):
+        shape = input_shape
+        # initialize gamma
+        self.gamma = nn.Parameter(torch.ones(shape))
+        # initialize beta
+        self.beta = nn.Parameter(torch.zeros(shape))
+
+    def forward(self, inputs):
+        mean = torch.mean(inputs, dim=-1, keepdim=True)
+        variance = torch.mean((inputs - mean) ** 2, dim=-1, keepdim=True)
+        std = torch.sqrt(variance + self.epsilon)
+        outputs = (inputs - mean) / std
+        outputs = outputs * self.gamma
+        outputs = outputs + self.beta
+        return outputs
 
 class MultiHeadAttention(nn.Module):
     ''' Multi-Head Attention module '''
@@ -54,8 +83,9 @@ class MultiHeadAttention(nn.Module):
         self.attention = ScaledDotProductAttention(temperature=d_k ** 0.5)
 
         self.dropout = nn.Dropout(dropout)
-        self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
-
+        # self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
+        self.layer_norm = InstantLayerNormalization(epsilon=1e-6)
+        self.layer_norm.build(d_model)
 
     def forward(self, q, k, v, mask=None):
 
@@ -96,7 +126,9 @@ class PositionwiseFeedForward(nn.Module):
         super().__init__()
         self.w_1 = nn.Linear(d_in, d_hid) # position-wise
         self.w_2 = nn.Linear(d_hid, d_in) # position-wise
-        self.layer_norm = nn.LayerNorm(d_in, eps=1e-6)
+        # self.layer_norm = nn.LayerNorm(d_in, eps=1e-6)
+        self.layer_norm = InstantLayerNormalization(epsilon=1e-6)
+        self.layer_norm.build(d_in)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
@@ -178,7 +210,9 @@ class TransformerEncoder(nn.Module):
         self.layer_stack = nn.ModuleList([
             EncoderLayer(d_model, d_inner, n_head, d_k, d_v, dropout=dropout)
             for _ in range(n_layers)])
-        self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
+        # self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
+        self.layer_norm = InstantLayerNormalization(epsilon=1e-6)
+        self.layer_norm.build(d_model)
         self.scale_emb = scale_emb
         self.d_model = d_model
 
@@ -317,12 +351,19 @@ class CleanUNet(nn.Module):
             if isinstance(layer, (nn.Conv1d, nn.ConvTranspose1d)):
                 weight_scaling_init(layer)
 
+        # quantization
+        self.quant = QuantStub()
+        self.dequant = DeQuantStub()
+
     def forward(self, noisy_audio):
         # (B, L) -> (B, C, L)
         if len(noisy_audio.shape) == 2:
             noisy_audio = noisy_audio.unsqueeze(1)
         B, C, L = noisy_audio.shape
         assert C == 1
+
+        # quantization
+        noisy_audio = self.quant(noisy_audio)
         
         # normalization and padding
         std = noisy_audio.std(dim=2, keepdim=True) + 1e-3
@@ -353,6 +394,9 @@ class CleanUNet(nn.Module):
             x = upsampling_block(x)
 
         x = x[:, :, :L] * std
+
+        # quantization
+        x = self.dequant(x)
         return x
 
 
