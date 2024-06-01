@@ -231,6 +231,20 @@ def padding(x, D, K, S):
     return x
 
 
+class AverageChannels(nn.Module):
+    def __init__(self, factor):
+        super(AverageChannels, self).__init__()
+        self.factor = factor
+
+    def forward(self, x):
+        batch_size, channels, length = x.size()
+        # Reshape the input to (batch_size, channels // factor, factor, length)
+        x = x.view(batch_size, channels // self.factor, self.factor, length)
+        # Average over the factor dimension
+        x = x.mean(dim=2)
+        return x
+
+
 class CleanUNet(nn.Module):
     """ CleanUNet architecture. """
 
@@ -274,6 +288,7 @@ class CleanUNet(nn.Module):
         global eff_attn
         eff_attn = kwargs.get('Efficient_Attention', None)
         self.onnx = kwargs.get('ONNX', None)
+        self.noconvt = kwargs.get('No ConvTranspose', None)
 
         # encoder and decoder
         self.encoder = nn.ModuleList()
@@ -287,22 +302,42 @@ class CleanUNet(nn.Module):
                 nn.GLU(dim=1)
             ))
             channels_input = channels_H
-
-            if i == 0:
-                # no relu at end
-                self.decoder.append(nn.Sequential(
-                    nn.Conv1d(channels_H, channels_H * 2, 1), 
-                    nn.GLU(dim=1),
-                    nn.ConvTranspose1d(channels_H, channels_output, kernel_size, stride)
-                ))
+            if self.noconvt:
+                if i == 0:
+                    # no relu at end
+                    self.decoder.append(nn.Sequential(
+                        nn.Conv1d(channels_H, channels_H * 2, 1), 
+                        nn.GLU(dim=1),
+                        nn.Upsample(scale_factor=stride, mode='bilinear', align_corners=False),
+                        AverageChannels(factor=4),
+                        nn.Conv1d(channels_H//4, channels_output, kernel_size)
+                    ))
+                else:
+                    self.decoder.insert(0, nn.Sequential(
+                        nn.Conv1d(channels_H, channels_H * 2, 1), 
+                        nn.GLU(dim=1),
+                        nn.Upsample(scale_factor=stride, mode='bilinear', align_corners=False),
+                        AverageChannels(factor=4),
+                        nn.Conv1d(channels_H//4, channels_output, kernel_size),
+                        nn.ReLU()
+                    ))
+                channels_output = channels_H
             else:
-                self.decoder.insert(0, nn.Sequential(
-                    nn.Conv1d(channels_H, channels_H * 2, 1), 
-                    nn.GLU(dim=1),
-                    nn.ConvTranspose1d(channels_H, channels_output, kernel_size, stride),
-                    nn.ReLU()
-                ))
-            channels_output = channels_H
+                if i == 0:
+                    # no relu at end
+                    self.decoder.append(nn.Sequential(
+                        nn.Conv1d(channels_H, channels_H * 2, 1), 
+                        nn.GLU(dim=1),
+                        nn.ConvTranspose1d(channels_H, channels_output, kernel_size, stride)
+                    ))
+                else:
+                    self.decoder.insert(0, nn.Sequential(
+                        nn.Conv1d(channels_H, channels_H * 2, 1), 
+                        nn.GLU(dim=1),
+                        nn.ConvTranspose1d(channels_H, channels_output, kernel_size, stride),
+                        nn.ReLU()
+                    ))
+                channels_output = channels_H
             
             # double H but keep below max_H
             channels_H *= 2
@@ -338,12 +373,13 @@ class CleanUNet(nn.Module):
         std = noisy_audio.std(dim=2, keepdim=True) + 1e-3
         noisy_audio /= std
         x = padding(noisy_audio, self.encoder_n_layers, self.kernel_size, self.stride)
-        
+        print("encoder start: ", x.shape)
         # encoder
         skip_connections = []
         for downsampling_block in self.encoder:
             x = downsampling_block(x)
             skip_connections.append(x)
+            print(x.shape)
         skip_connections = skip_connections[::-1]
 
         # attention mask for causal inference; for non-causal, set attn_mask to None
@@ -357,10 +393,14 @@ class CleanUNet(nn.Module):
         x = self.tsfm_conv2(x)  # C 512 -> 1024
 
         # decoder
+        print("decoder start: ", x.shape)
+
         for i, upsampling_block in enumerate(self.decoder):
             skip_i = skip_connections[i]
             x = x + skip_i[:, :, :x.shape[-1]]
             x = upsampling_block(x)
+            print(x.shape)
+
 
         x = x[:, :, :L] * std
         return x
