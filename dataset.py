@@ -20,7 +20,6 @@ np.random.seed(0)
 from torchvision import datasets, models, transforms
 import torchaudio
 
-
 class CleanNoisyPairDataset(Dataset):
     """
     Create a Dataset of clean and noisy audio pairs. 
@@ -33,7 +32,7 @@ class CleanNoisyPairDataset(Dataset):
         assert subset is None or subset in ["training", "testing", "validation"]
         self.crop_length_sec = crop_length_sec
         self.subset = subset
-
+        
         N_clean = len(os.listdir(os.path.join(root, 'train/clean')))
         N_noisy = len(os.listdir(os.path.join(root, 'train/noisy')))
         assert N_clean == N_noisy
@@ -60,7 +59,9 @@ class CleanNoisyPairDataset(Dataset):
         assert len(clean_audio) == len(noisy_audio)
 
         crop_length = int(self.crop_length_sec * sample_rate)
-        assert crop_length < len(clean_audio)
+        
+        if crop_length > len(clean_audio):
+            crop_length = len(clean_audio)
 
         # random crop
         if self.subset != 'testing' and crop_length > 0:
