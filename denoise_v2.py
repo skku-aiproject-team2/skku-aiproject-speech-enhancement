@@ -57,10 +57,10 @@ def denoise_v2(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
         num = len(dataloader)
 
     # predefine model
-    if gpu:
-        net = CleanUNet(**network_config, **opt_config).cuda()
-    else:
-        net = CleanUNet(**network_config, **opt_config).to('cpu')
+    device = 'cuda' if gpu else 'cpu'
+    if(gpu):
+        assert torch.cuda.is_available()
+    net = CleanUNet(**network_config, **opt_config).to(device)
     print_size(net)
 
     # load checkpoint
@@ -93,11 +93,11 @@ def denoise_v2(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
     iter = 1
     with tqdm(total = num) as pbar:
         for clean_audio, noisy_audio, fileid in dataloader:
-            if not gpu:
-                clean_audio, noisy_audio = clean_audio.to('cpu'), noisy_audio.to('cpu')
-            else:
-                noisy_audio = noisy_audio.cuda()
-
+            # if not gpu:
+                # clean_audio, noisy_audio = clean_audio.to('cpu'), noisy_audio.to('cpu')
+            # else:
+                # noisy_audio = noisy_audio.cuda()
+            clean_audio, noisy_audio = clean_audio.to(device), noisy_audio.to(device)
 
             filename = sortkey(fileid[0][0])
     
