@@ -23,16 +23,24 @@ class ScaledDotProductAttention(nn.Module):
         self.dropout = nn.Dropout(attn_dropout)
 
     def forward(self, q, k, v, mask=None):
-
-        attn = torch.matmul(q / self.temperature, k.transpose(2, 3))
-
-        if mask is not None:
-            attn = attn.masked_fill(mask == 0, -1e9)
-
-        attn = self.dropout(F.softmax(attn, dim=-1))
-        output = torch.matmul(attn, v)
-
-        return output, attn
+        if(eff_attn): # memory efficient attention
+            scale_factor = self.temperature
+            attn_mask = torch.ones(q.size(0), k.size(0), dtype=torch.bool).tril(diagonal=0) if mask==None else mask
+            attn_mask = attn_mask.masked_fill(~attn_mask, -float('inf')) if attn_mask.dtype==torch.bool else attn_mask
+            attn_weight = F.softmax((q @ k.transpose(-2, -1) * scale_factor) + attn_mask, dim=-1)
+            attn_weight = self.dropout(attn_weight)
+            return attn_weight @ v, attn_weight
+            
+        else:
+            attn = torch.matmul(q / self.temperature, k.transpose(2, 3))
+    
+            if mask is not None:
+                attn = attn.masked_fill(mask == 0, -1e9)
+    
+            attn = self.dropout(F.softmax(attn, dim=-1))
+            output = torch.matmul(attn, v)
+    
+            return output, attn
 
 
 class MultiHeadAttention(nn.Module):
@@ -232,7 +240,7 @@ class CleanUNet(nn.Module):
                  tsfm_n_layers=3, 
                  tsfm_n_head=8,
                  tsfm_d_model=512, 
-                 tsfm_d_inner=2048):
+                 tsfm_d_inner=2048, **kwargs):
         
         """
         Parameters:
@@ -263,6 +271,9 @@ class CleanUNet(nn.Module):
         self.tsfm_n_head = tsfm_n_head
         self.tsfm_d_model = tsfm_d_model
         self.tsfm_d_inner = tsfm_d_inner
+        global eff_attn
+        eff_attn = kwargs.get('Efficient_Attention', None)
+        self.onnx = kwargs.get('ONNX', None)
 
         # encoder and decoder
         self.encoder = nn.ModuleList()

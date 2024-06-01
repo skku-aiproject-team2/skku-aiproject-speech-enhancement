@@ -1,32 +1,3 @@
-# Adapted from https://github.com/NVIDIA/waveglow under the BSD 3-Clause License.
-
-# *****************************************************************************
-#  Copyright (c) 2018, NVIDIA CORPORATION.  All rights reserved.
-#
-#  Redistribution and use in source and binary forms, with or without
-#  modification, are permitted provided that the following conditions are met:
-#      * Redistributions of source code must retain the above copyright
-#        notice, this list of conditions and the following disclaimer.
-#      * Redistributions in binary form must reproduce the above copyright
-#        notice, this list of conditions and the following disclaimer in the
-#        documentation and/or other materials provided with the distribution.
-#      * Neither the name of the NVIDIA CORPORATION nor the
-#        names of its contributors may be used to endorse or promote products
-#        derived from this software without specific prior written permission.
-#
-#  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-#  ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-#  WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-#  DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE FOR ANY
-#  DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-#  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-#  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
-#  ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-#  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-#  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-# *****************************************************************************
-
 import os
 import argparse
 import json
@@ -36,6 +7,7 @@ from copy import deepcopy
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.utils.data import Subset
 # from torch.utils.tensorboard import SummaryWriter
 
 import time
@@ -53,7 +25,7 @@ from util import rescale, find_max_epoch, print_size, sampling
 from network import CleanUNet
 
 
-def denoise(output_directory, ckpt_iter, subset, dump=False):
+def denoise(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
     """
     Denoise audio
 
@@ -62,6 +34,9 @@ def denoise(output_directory, ckpt_iter, subset, dump=False):
     ckpt_iter (int or 'max'):       the pretrained checkpoint to be loaded; 
                                     automitically selects the maximum iteration if 'max' is selected
     subset (str):                   training, testing, validation
+    num (int):                      number of samples to use in inference, use all if 0.
+    gpu (bool):                     whether to run on gpu
+    opt (bool):                     wheter to use optimazation scheme
     dump (bool):                    whether save enhanced (denoised) audio
     """
 
@@ -78,9 +53,14 @@ def denoise(output_directory, ckpt_iter, subset, dump=False):
         batch_size=1, 
         num_gpus=1
     )
+    if num == 0:
+        num = len(dataloader)
 
     # predefine model
-    net = CleanUNet(**network_config).cuda()
+    device = 'cuda' if gpu else 'cpu'
+    if(gpu):
+        assert torch.cuda.is_available()
+    net = CleanUNet(**network_config, **opt_config).to(device)
     print_size(net)
 
     # load checkpoint
@@ -110,29 +90,41 @@ def denoise(output_directory, ckpt_iter, subset, dump=False):
     sortkey = lambda name: '_'.join(name.split('/')[-1].split('_')[1:])
 
     avg_time = 0
-    for clean_audio, noisy_audio, fileid in tqdm(dataloader):
-        start_time = time.time()
-        filename = sortkey(fileid[0][0])
+    iter = 1
+    with tqdm(total = num) as pbar:
+        for clean_audio, noisy_audio, fileid in dataloader:
+            # if not gpu:
+                # clean_audio, noisy_audio = clean_audio.to('cpu'), noisy_audio.to('cpu')
+            # else:
+                # noisy_audio = noisy_audio.cuda()
+            clean_audio, noisy_audio = clean_audio.to(device), noisy_audio.to(device)
 
-        noisy_audio = noisy_audio.cuda()
-        LENGTH = len(noisy_audio[0].squeeze())
-
-        generated_audio = sampling(net, noisy_audio)
-        
-        if dump:
-            wavwrite(os.path.join(speech_directory, 'enhanced_{}'.format(filename)), 
-                    trainset_config["sample_rate"],
-                    generated_audio[0].squeeze().cpu().numpy())
-        else:
-            all_clean_audio.append(clean_audio[0].squeeze().cpu().numpy())
-            all_generated_audio.append(generated_audio[0].squeeze().cpu().numpy())
+            filename = sortkey(fileid[0][0])
+    
+            LENGTH = len(noisy_audio[0].squeeze())
+            start_time = time.time()
+            generated_audio = sampling(net, noisy_audio)
             
-        end_time = time.time()
-        print("Time: ", end_time - start_time)
+            if dump:
+                wavwrite(os.path.join(speech_directory, 'enhanced_{}'.format(filename)), 
+                        trainset_config["sample_rate"],
+                        generated_audio[0].squeeze().cpu().numpy())
+            else:
+                all_clean_audio.append(clean_audio[0].squeeze().cpu().numpy())
+                all_generated_audio.append(generated_audio[0].squeeze().cpu().numpy())
+                
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            avg_time += elapsed_time
+            pbar.set_postfix({"Average Time": f"{avg_time / iter:.6f}"})
+            pbar.update(1)
+  
+            
+            if iter == num:
+                break
+            iter+=1
 
-        avg_time += end_time - start_time
-
-    print("Average time: ", avg_time / len(dataloader))
+    print("Average time: ", avg_time / iter)
     return all_clean_audio, all_generated_audio
 
 
@@ -144,6 +136,11 @@ if __name__ == "__main__":
                         help='Which checkpoint to use; assign a number or "max" or "pretrained"')     
     parser.add_argument('-subset', '--subset', type=str, choices=['training', 'testing', 'validation'],
                         default='testing', help='subset for denoising')
+    parser.add_argument('-n','--num', type=int, default=0, help='number of samples to use in inference')
+    parser.add_argument('-cpu', '--cpu', action='store_true', help='Use CPU instead of GPU')
+    parser.add_argument('-opt', '--opt', action='store_true', help='Use optimization')
+    
+
     args = parser.parse_args()
 
     # Parse configs. Globals nicer in this case
@@ -157,13 +154,25 @@ if __name__ == "__main__":
     train_config            = config["train_config"]        # train config
     global trainset_config
     trainset_config         = config["trainset_config"]     # to read trainset configurations
+    if args.opt==True:
+        global opt_config
+        opt_config         = config["opt_config"] 
+    else:
+        opt_config          = {}
 
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = True
 
+    gpu = not args.cpu
+    opt = args.opt
+    
     if args.subset == "testing":
-        denoise(gen_config["output_directory"],
-                subset=args.subset,
-                ckpt_iter=args.ckpt_iter,
-                dump=True)
+        with torch.no_grad():
+            denoise(gen_config["output_directory"],
+                    subset=args.subset,
+                    ckpt_iter=args.ckpt_iter,
+                    num=args.num,
+                    gpu=gpu,
+                    opt=opt,
+                    dump=True)
     

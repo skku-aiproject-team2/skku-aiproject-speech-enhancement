@@ -40,8 +40,8 @@
         }
     },
     "trainset_config": {
-        "root": "./dataset",
-        "crop_length_sec": 3,
+        "root": "../CleanUNet/dataset_mini",
+        "crop_length_sec": 1,
         "sample_rate": 48000
     },
     "gen_config":{
@@ -50,5 +50,9 @@
     "dist_config": {
         "dist_backend": "nccl",
         "dist_url": "tcp://localhost:54321"
+    },
+    "opt_config": {
+        "Efficient_Attention": true,
+        "ONNX": true
     }
 }
