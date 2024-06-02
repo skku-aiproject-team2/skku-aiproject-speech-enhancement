@@ -26,11 +26,12 @@ class CleanNoisyPairDataset(Dataset):
     Each element is a tuple of the form (clean waveform, noisy waveform, file_id)
     """
     
-    def __init__(self, root='./', subset='training', crop_length_sec=0):
+    def __init__(self, root='./', subset='training', crop_length_sec=0, sample_rate=48000):
         super(CleanNoisyPairDataset).__init__()
 
         assert subset is None or subset in ["training", "testing", "validation"]
         self.crop_length_sec = crop_length_sec
+        self.sample_rate = sample_rate
         self.subset = subset
         
         N_clean = len(os.listdir(os.path.join(root, 'train/clean')))
@@ -74,20 +75,32 @@ class CleanNoisyPairDataset(Dataset):
 
     def __len__(self):
         return len(self.files)
+    
+    def pad_collate_fn(self, batch, max_length=144000):
+        if len(batch) == 1:
+            return batch[0]
+        
+        max_length = self.crop_length_sec * self.sample_rate
+        clean_audios, noisy_audios, fileids = zip(*batch)
+        
+        padded_clean_audios = [torch.nn.functional.pad(audio, (0, max_length - audio.shape[-1])) for audio in clean_audios]
+        padded_noisy_audios = [torch.nn.functional.pad(audio, (0, max_length - audio.shape[-1])) for audio in noisy_audios]
+
+        return torch.stack(padded_clean_audios), torch.stack(padded_noisy_audios), fileids
 
 
 def load_CleanNoisyPairDataset(root, subset, crop_length_sec, batch_size, sample_rate, num_gpus=1):
     """
     Get dataloader with distributed sampling
     """
-    dataset = CleanNoisyPairDataset(root=root, subset=subset, crop_length_sec=crop_length_sec)                                                       
+    dataset = CleanNoisyPairDataset(root=root, subset=subset, crop_length_sec=crop_length_sec, sample_rate=sample_rate)                                                       
     kwargs = {"batch_size": batch_size, "num_workers": 4, "pin_memory": False, "drop_last": False}
 
     if num_gpus > 1:
         train_sampler = DistributedSampler(dataset)
-        dataloader = torch.utils.data.DataLoader(dataset, sampler=train_sampler, **kwargs)
+        dataloader = torch.utils.data.DataLoader(dataset, sampler=train_sampler, **kwargs, collate_fn=dataset.pad_collate_fn)
     else:
-        dataloader = torch.utils.data.DataLoader(dataset, sampler=None, shuffle=True, **kwargs)
+        dataloader = torch.utils.data.DataLoader(dataset, sampler=None, shuffle=True, **kwargs, collate_fn=dataset.pad_collate_fn)
         
     return dataloader
 
