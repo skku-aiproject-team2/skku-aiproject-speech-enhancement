@@ -70,6 +70,7 @@ def denoise(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
     if ckpt_iter != 'pretrained':
         ckpt_iter = int(ckpt_iter)
     model_path = os.path.join(ckpt_directory, '{}.pkl'.format(ckpt_iter))
+    print('model_path:', model_path)
     checkpoint = torch.load(model_path, map_location='cpu')
     net.load_state_dict(checkpoint['model_state_dict'])
     net.eval()
@@ -99,14 +100,14 @@ def denoise(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
                 # noisy_audio = noisy_audio.cuda()
             clean_audio, noisy_audio = clean_audio.to(device), noisy_audio.to(device)
 
-            filename = sortkey(fileid[0][0])
+            filename = fileid[0][0].split('/')[-1]
     
             LENGTH = len(noisy_audio[0].squeeze())
             start_time = time.time()
             generated_audio = sampling(net, noisy_audio)
             
             if dump:
-                wavwrite(os.path.join(speech_directory, 'enhanced_{}'.format(filename)), 
+                wavwrite(os.path.join(speech_directory, filename), 
                         trainset_config["sample_rate"],
                         generated_audio[0].squeeze().cpu().numpy())
             else:
