@@ -93,7 +93,7 @@ def train(num_gpus, rank, group_name,
     print('Data loaded')
     
     # predefine model
-    net = CleanUNet(**network_config).cuda()
+    net = CleanUNet(**network_config,**opt_config).cuda()
     print_size(net)
 
     # apply gradient all reduce
@@ -228,6 +228,8 @@ if __name__ == "__main__":
                         help='rank of process for distributed')
     parser.add_argument('-g', '--group_name', type=str, default='',
                         help='name of group for distributed')
+    parser.add_argument('-opt', '--opt', action='store_true', help='Use optimization')
+
     args = parser.parse_args()
 
     # Parse configs. Globals nicer in this case
@@ -241,7 +243,8 @@ if __name__ == "__main__":
     network_config          = config["network_config"]      # to define network
     global trainset_config
     trainset_config         = config["trainset_config"]     # to load trainset
-
+    global opt_config
+    opt_config         = config["opt_config"] 
     num_gpus = torch.cuda.device_count()
     if num_gpus > 1:
         if args.group_name == '':

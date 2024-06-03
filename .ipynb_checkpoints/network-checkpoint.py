@@ -23,15 +23,24 @@ class ScaledDotProductAttention(nn.Module):
         self.dropout = nn.Dropout(attn_dropout)
 
     def forward(self, q, k, v, mask=None):
-        attn = torch.matmul(q / self.temperature, k.transpose(2, 3))
-
-        if mask is not None:
-            attn = attn.masked_fill(mask == 0, -1e9)
-
-        attn = self.dropout(F.softmax(attn, dim=-1))
-        output = torch.matmul(attn, v)
-
-        return output, attn
+        if(eff_attn): # memory efficient attention
+            scale_factor = self.temperature
+            attn_mask = torch.ones(q.size(0), k.size(0), dtype=torch.bool).tril(diagonal=0) if mask==None else mask
+            attn_mask = attn_mask.masked_fill(~attn_mask, -float('inf')) if attn_mask.dtype==torch.bool else attn_mask
+            attn_weight = F.softmax((q @ k.transpose(-2, -1) * scale_factor) + attn_mask, dim=-1)
+            attn_weight = self.dropout(attn_weight)
+            return attn_weight @ v, attn_weight
+            
+        else:
+            attn = torch.matmul(q / self.temperature, k.transpose(2, 3))
+    
+            if mask is not None:
+                attn = attn.masked_fill(mask == 0, -1e9)
+    
+            attn = self.dropout(F.softmax(attn, dim=-1))
+            output = torch.matmul(attn, v)
+    
+            return output, attn
 
 
 class MultiHeadAttention(nn.Module):
@@ -213,46 +222,13 @@ def padding(x, D, K, S):
             L = 1
         else:
             L = 1 + np.ceil((L - K) / S)
-            # L = np.ceil((L)/S)
 
     for _ in range(D):
         L = (L - 1) * S + K
-        # L = L*S
+    
     L = int(L)
     x = F.pad(x, (0, L - x.shape[-1]))
     return x
-
-def padding1(x, D, K, S): # padding for bilinear
-    """padding zeroes to x so that denoised audio has the same length"""
-
-    L = x.shape[-1]
-    for _ in range(D):
-        if L < K:
-            L = 1
-        else:
-            # L = 1 + np.ceil((L - K) / S)
-            L = np.ceil((L)/S)
-
-    for _ in range(D):
-        # L = (L - 1) * S + K
-        L = L*S
-    L = int(L)
-    x = F.pad(x, (0, L - x.shape[-1]))
-    return x
-
-
-class AverageChannels(nn.Module):
-    def __init__(self, factor):
-        super(AverageChannels, self).__init__()
-        self.factor = factor
-
-    def forward(self, x):
-        batch_size, channels, length = x.size()
-        # Reshape the input to (batch_size, channels // factor, factor, length)
-        x = x.view(batch_size, channels // self.factor, self.factor, length)
-        # Average over the factor dimension
-        x = x.mean(dim=2)
-        return x
 
 
 class CleanUNet(nn.Module):
@@ -298,66 +274,35 @@ class CleanUNet(nn.Module):
         global eff_attn
         eff_attn = kwargs.get('Efficient_Attention', None)
         self.onnx = kwargs.get('ONNX', None)
-        self.bilinear = kwargs.get('bilinear', None)
-        self.nearest = kwargs.get('nearest', None)
 
         # encoder and decoder
         self.encoder = nn.ModuleList()
         self.decoder = nn.ModuleList()
 
         for i in range(encoder_n_layers):
-            if self.bilinear:
-                print("bilinear")
-                self.encoder.append(nn.Sequential(
-                    nn.Conv1d(channels_input, channels_H, kernel_size, stride, padding=1),
-                    nn.ReLU(),
-                    nn.Conv1d(channels_H, channels_H * 2, 1), 
-                    nn.GLU(dim=1)
-                ))
-                channels_input = channels_H
-                if i == 0:
-                    # no relu at end
-                    self.decoder.append(nn.Sequential(
-                        nn.Conv1d(channels_H, channels_H * 2, 1), 
-                        nn.GLU(dim=1),
-                        nn.Upsample(scale_factor=stride, mode='linear', align_corners=False),
-                        AverageChannels(factor=4),
-                        nn.Conv1d(channels_H//4, channels_output, kernel_size, padding='same')
-                    ))
-                else:
-                    self.decoder.insert(0, nn.Sequential(
-                        nn.Conv1d(channels_H, channels_H * 2, 1), 
-                        nn.GLU(dim=1),
-                        nn.Upsample(scale_factor=stride, mode='linear', align_corners=False),
-                        AverageChannels(factor=4),
-                        nn.Conv1d(channels_H//4, channels_output, kernel_size, padding='same'),
-                        nn.ReLU()
-                    ))
-                channels_output = channels_H
+            self.encoder.append(nn.Sequential(
+                nn.Conv1d(channels_input, channels_H, kernel_size, stride),
+                nn.ReLU(),
+                nn.Conv1d(channels_H, channels_H * 2, 1), 
+                nn.GLU(dim=1)
+            ))
+            channels_input = channels_H
 
-            else: # baseline
-                self.encoder.append(nn.Sequential(
-                    nn.Conv1d(channels_input, channels_H, kernel_size, stride),
-                    nn.ReLU(),
+            if i == 0:
+                # no relu at end
+                self.decoder.append(nn.Sequential(
                     nn.Conv1d(channels_H, channels_H * 2, 1), 
-                    nn.GLU(dim=1)
+                    nn.GLU(dim=1),
+                    nn.ConvTranspose1d(channels_H, channels_output, kernel_size, stride)
                 ))
-                channels_input = channels_H
-                if i == 0:
-                    # no relu at end
-                    self.decoder.append(nn.Sequential(
-                        nn.Conv1d(channels_H, channels_H * 2, 1), 
-                        nn.GLU(dim=1),
-                        nn.ConvTranspose1d(channels_H, channels_output, kernel_size, stride)
-                    ))
-                else:
-                    self.decoder.insert(0, nn.Sequential(
-                        nn.Conv1d(channels_H, channels_H * 2, 1), 
-                        nn.GLU(dim=1),
-                        nn.ConvTranspose1d(channels_H, channels_output, kernel_size, stride),
-                        nn.ReLU()
-                    ))
-                channels_output = channels_H
+            else:
+                self.decoder.insert(0, nn.Sequential(
+                    nn.Conv1d(channels_H, channels_H * 2, 1), 
+                    nn.GLU(dim=1),
+                    nn.ConvTranspose1d(channels_H, channels_output, kernel_size, stride),
+                    nn.ReLU()
+                ))
+            channels_output = channels_H
             
             # double H but keep below max_H
             channels_H *= 2
@@ -381,7 +326,7 @@ class CleanUNet(nn.Module):
         for layer in self.modules():
             if isinstance(layer, (nn.Conv1d, nn.ConvTranspose1d)):
                 weight_scaling_init(layer)
-    # @profile
+
     def forward(self, noisy_audio):
         # (B, L) -> (B, C, L)
         if len(noisy_audio.shape) == 2:
@@ -392,17 +337,13 @@ class CleanUNet(nn.Module):
         # normalization and padding
         std = noisy_audio.std(dim=2, keepdim=True) + 1e-3
         noisy_audio /= std
-        if self.bilinear or self.nearest:
-            x = padding1(noisy_audio, self.encoder_n_layers, self.kernel_size, self.stride)
-        else:
-            x = padding(noisy_audio, self.encoder_n_layers, self.kernel_size, self.stride)
+        x = padding(noisy_audio, self.encoder_n_layers, self.kernel_size, self.stride)
+        
         # encoder
         skip_connections = []
-        # print("start of encoder: ",x.shape)
         for downsampling_block in self.encoder:
             x = downsampling_block(x)
             skip_connections.append(x)
-            # print(x.shape)
         skip_connections = skip_connections[::-1]
 
         # attention mask for causal inference; for non-causal, set attn_mask to None
@@ -416,13 +357,10 @@ class CleanUNet(nn.Module):
         x = self.tsfm_conv2(x)  # C 512 -> 1024
 
         # decoder
-        # print("start of decoder: ",x.shape)
         for i, upsampling_block in enumerate(self.decoder):
             skip_i = skip_connections[i]
             x = x + skip_i[:, :, :x.shape[-1]]
             x = upsampling_block(x)
-            # print(x.shape)
-
 
         x = x[:, :, :L] * std
         return x

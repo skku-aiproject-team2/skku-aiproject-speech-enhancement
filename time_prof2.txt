@@ -1,0 +1,53 @@
+exp_path: valentini
+CleanUNet Parameters: 46.071937M;  
+speech_directory:  ./exp/valentini/speech/85k
+Average time:  2.47227942943573
+Wrote profile results to denoise.py.lprof
+Timer unit: 1e-06 s
+
+Total time: 24.7095 s
+File: /home/skm/projects/CleanUNet-donghoon/network.py
+Function: forward at line 365
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+   365                                               @profile
+   366                                               def forward(self, noisy_audio):
+   367                                                   # (B, L) -> (B, C, L)
+   368        10         34.2      3.4      0.0          if len(noisy_audio.shape) == 2:
+   369                                                       noisy_audio = noisy_audio.unsqueeze(1)
+   370        10         10.5      1.0      0.0          B, C, L = noisy_audio.shape
+   371        10          8.8      0.9      0.0          assert C == 1
+   372                                                   
+   373                                                   # normalization and padding
+   374        10      15112.4   1511.2      0.1          std = noisy_audio.std(dim=2, keepdim=True) + 1e-3
+   375        10        187.2     18.7      0.0          noisy_audio /= std
+   376        10       1649.1    164.9      0.0          x = padding(noisy_audio, self.encoder_n_layers, self.kernel_size, self.stride)
+   377                                                   # encoder
+   378        10          3.8      0.4      0.0          skip_connections = []
+   379        90        443.2      4.9      0.0          for downsampling_block in self.encoder:
+   380        80    2234239.7  27928.0      9.0              x = downsampling_block(x)
+   381        80        136.0      1.7      0.0              skip_connections.append(x)
+   382        10         51.8      5.2      0.0          skip_connections = skip_connections[::-1]
+   383                                           
+   384                                                   # attention mask for causal inference; for non-causal, set attn_mask to None
+   385        10         33.4      3.3      0.0          len_s = x.shape[-1]  # length at bottleneck
+   386        10       3037.8    303.8      0.0          attn_mask = (1 - torch.triu(torch.ones((1, len_s, len_s), device=x.device), diagonal=1)).bool()
+   387                                           
+   388        10      14559.9   1456.0      0.1          x = self.tsfm_conv1(x)  # C 1024 -> 512
+   389        10        146.2     14.6      0.0          x = x.permute(0, 2, 1)
+   390        10     642700.5  64270.0      2.6          x = self.tsfm_encoder(x, src_mask=attn_mask)
+   391        10        116.5     11.6      0.0          x = x.permute(0, 2, 1)
+   392        10      15802.8   1580.3      0.1          x = self.tsfm_conv2(x)  # C 512 -> 1024
+   393                                           
+   394                                                   # decoder
+   395                                           
+   396        90        368.7      4.1      0.0          for i, upsampling_block in enumerate(self.decoder):
+   397        80         43.4      0.5      0.0              skip_i = skip_connections[i]
+   398        80     111435.9   1392.9      0.5              x = x + skip_i[:, :, :x.shape[-1]]
+   399        80   21668595.8 270857.4     87.7              x = upsampling_block(x)
+   400                                           
+   401                                           
+   402        10        811.3     81.1      0.0          x = x[:, :, :L] * std
+   403        10         18.1      1.8      0.0          return x
+

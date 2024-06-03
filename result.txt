@@ -1,0 +1,57 @@
+exp_path: valentini+bilinear
+{'bilinear': True}
+CleanUNet Parameters: 39.067585M;  
+speech_directory:  ./exp/valentini+bilinear/speech/0k
+Average time:  0.4036802577972412
+Wrote profile results to denoise.py.lprof
+Timer unit: 1e-06 s
+
+Total time: 40.2467 s
+File: /home/skm/projects/CleanUNet-donghoon/network.py
+Function: forward at line 365
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+   365                                               @profile
+   366                                               def forward(self, noisy_audio):
+   367                                                   # (B, L) -> (B, C, L)
+   368       100        178.5      1.8      0.0          if len(noisy_audio.shape) == 2:
+   369                                                       noisy_audio = noisy_audio.unsqueeze(1)
+   370       100        105.2      1.1      0.0          B, C, L = noisy_audio.shape
+   371       100         55.2      0.6      0.0          assert C == 1
+   372                                                   
+   373                                                   # normalization and padding
+   374       100      14905.5    149.1      0.0          std = noisy_audio.std(dim=2, keepdim=True) + 1e-3
+   375       100       1463.8     14.6      0.0          noisy_audio /= std
+   376       100       9636.0     96.4      0.0          x = padding(noisy_audio, self.encoder_n_layers, self.kernel_size, self.stride)
+   377                                                   # encoder
+   378       100         28.9      0.3      0.0          skip_connections = []
+   379                                                   # print("start of encoder: ",x.shape)
+   380       900       2563.3      2.8      0.0          for downsampling_block in self.encoder:
+   381       800   18074984.0  22593.7     44.9              x = downsampling_block(x)
+   382       800        725.1      0.9      0.0              skip_connections.append(x)
+   383                                                       # print(x.shape)
+   384       100        231.3      2.3      0.0          skip_connections = skip_connections[::-1]
+   385                                           
+   386                                                   # attention mask for causal inference; for non-causal, set attn_mask to None
+   387       100        325.7      3.3      0.0          len_s = x.shape[-1]  # length at bottleneck
+   388       100      21827.3    218.3      0.1          attn_mask = (1 - torch.triu(torch.ones((1, len_s, len_s), device=x.device), diagonal=1)).bool()
+   389                                           
+   390       100     120247.7   1202.5      0.3          x = self.tsfm_conv1(x)  # C 1024 -> 512
+   391       100       1440.7     14.4      0.0          x = x.permute(0, 2, 1)
+   392       100    4806523.2  48065.2     11.9          x = self.tsfm_encoder(x, src_mask=attn_mask)
+   393       100       1003.2     10.0      0.0          x = x.permute(0, 2, 1)
+   394       100     155042.8   1550.4      0.4          x = self.tsfm_conv2(x)  # C 512 -> 1024
+   395                                           
+   396                                                   # decoder
+   397                                                   # print("start of decoder: ",x.shape)
+   398       900       3058.9      3.4      0.0          for i, upsampling_block in enumerate(self.decoder):
+   399       800        349.5      0.4      0.0              skip_i = skip_connections[i]
+   400       800     706450.9    883.1      1.8              x = x + skip_i[:, :, :x.shape[-1]]
+   401       800   16317447.1  20396.8     40.5              x = upsampling_block(x)
+   402                                                       # print(x.shape)
+   403                                           
+   404                                           
+   405       100       7985.8     79.9      0.0          x = x[:, :, :L] * std
+   406       100        163.9      1.6      0.0          return x
+

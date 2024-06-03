@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from util import weight_scaling_init
+from memory_profiler import profile
 
 
 # Transformer (encoder) https://github.com/jadore801120/attention-is-all-you-need-pytorch
@@ -23,10 +24,12 @@ class ScaledDotProductAttention(nn.Module):
         self.dropout = nn.Dropout(attn_dropout)
 
     def forward(self, q, k, v, mask=None):
+
         attn = torch.matmul(q / self.temperature, k.transpose(2, 3))
 
         if mask is not None:
-            attn = attn.masked_fill(mask == 0, -1e9)
+            # attn = attn.masked_fill(mask == 0, -1e9)
+            attn = attn.float().masked_fill(mask == 0, float('-1e9')).type_as(attn)
 
         attn = self.dropout(F.softmax(attn, dim=-1))
         output = torch.matmul(attn, v)
@@ -54,7 +57,7 @@ class MultiHeadAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
 
-
+    #@profile
     def forward(self, q, k, v, mask=None):
 
         d_k, d_v, n_head = self.d_k, self.d_v, self.n_head
@@ -96,7 +99,7 @@ class PositionwiseFeedForward(nn.Module):
         self.w_2 = nn.Linear(d_hid, d_in) # position-wise
         self.layer_norm = nn.LayerNorm(d_in, eps=1e-6)
         self.dropout = nn.Dropout(dropout)
-
+    #@profile
     def forward(self, x):
 
         residual = x
@@ -150,7 +153,7 @@ class EncoderLayer(nn.Module):
         super(EncoderLayer, self).__init__()
         self.slf_attn = MultiHeadAttention(n_head, d_model, d_k, d_v, dropout=dropout)
         self.pos_ffn = PositionwiseFeedForward(d_model, d_inner, dropout=dropout)
-
+    #@profile
     def forward(self, enc_input, slf_attn_mask=None):
         enc_output, enc_slf_attn = self.slf_attn(
             enc_input, enc_input, enc_input, mask=slf_attn_mask)
@@ -179,7 +182,7 @@ class TransformerEncoder(nn.Module):
         self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
         self.scale_emb = scale_emb
         self.d_model = d_model
-
+    #@profile
     def forward(self, src_seq, src_mask, return_attns=False):
 
         enc_slf_attn_list = []
@@ -213,47 +216,13 @@ def padding(x, D, K, S):
             L = 1
         else:
             L = 1 + np.ceil((L - K) / S)
-            # L = np.ceil((L)/S)
 
     for _ in range(D):
         L = (L - 1) * S + K
-        # L = L*S
+    
     L = int(L)
     x = F.pad(x, (0, L - x.shape[-1]))
     return x
-
-def padding1(x, D, K, S): # padding for bilinear
-    """padding zeroes to x so that denoised audio has the same length"""
-
-    L = x.shape[-1]
-    for _ in range(D):
-        if L < K:
-            L = 1
-        else:
-            # L = 1 + np.ceil((L - K) / S)
-            L = np.ceil((L)/S)
-
-    for _ in range(D):
-        # L = (L - 1) * S + K
-        L = L*S
-    L = int(L)
-    x = F.pad(x, (0, L - x.shape[-1]))
-    return x
-
-
-class AverageChannels(nn.Module):
-    def __init__(self, factor):
-        super(AverageChannels, self).__init__()
-        self.factor = factor
-
-    def forward(self, x):
-        batch_size, channels, length = x.size()
-        # Reshape the input to (batch_size, channels // factor, factor, length)
-        x = x.view(batch_size, channels // self.factor, self.factor, length)
-        # Average over the factor dimension
-        x = x.mean(dim=2)
-        return x
-
 
 class CleanUNet(nn.Module):
     """ CleanUNet architecture. """
@@ -295,69 +264,66 @@ class CleanUNet(nn.Module):
         self.tsfm_n_head = tsfm_n_head
         self.tsfm_d_model = tsfm_d_model
         self.tsfm_d_inner = tsfm_d_inner
-        global eff_attn
-        eff_attn = kwargs.get('Efficient_Attention', None)
-        self.onnx = kwargs.get('ONNX', None)
-        self.bilinear = kwargs.get('bilinear', None)
-        self.nearest = kwargs.get('nearest', None)
 
         # encoder and decoder
         self.encoder = nn.ModuleList()
         self.decoder = nn.ModuleList()
 
-        for i in range(encoder_n_layers):
-            if self.bilinear:
-                print("bilinear")
-                self.encoder.append(nn.Sequential(
-                    nn.Conv1d(channels_input, channels_H, kernel_size, stride, padding=1),
-                    nn.ReLU(),
-                    nn.Conv1d(channels_H, channels_H * 2, 1), 
-                    nn.GLU(dim=1)
-                ))
-                channels_input = channels_H
-                if i == 0:
-                    # no relu at end
-                    self.decoder.append(nn.Sequential(
-                        nn.Conv1d(channels_H, channels_H * 2, 1), 
-                        nn.GLU(dim=1),
-                        nn.Upsample(scale_factor=stride, mode='linear', align_corners=False),
-                        AverageChannels(factor=4),
-                        nn.Conv1d(channels_H//4, channels_output, kernel_size, padding='same')
-                    ))
-                else:
-                    self.decoder.insert(0, nn.Sequential(
-                        nn.Conv1d(channels_H, channels_H * 2, 1), 
-                        nn.GLU(dim=1),
-                        nn.Upsample(scale_factor=stride, mode='linear', align_corners=False),
-                        AverageChannels(factor=4),
-                        nn.Conv1d(channels_H//4, channels_output, kernel_size, padding='same'),
-                        nn.ReLU()
-                    ))
-                channels_output = channels_H
+        # for i in range(encoder_n_layers):
+        #     self.encoder.append(nn.Sequential(
+        #         nn.Conv1d(channels_input, channels_H, kernel_size, stride),
+        #         nn.ReLU(),
+        #         nn.Conv1d(channels_H, channels_H * 2, 1), 
+        #         nn.GLU(dim=1)
+        #     ))
+        #     channels_input = channels_H
 
-            else: # baseline
-                self.encoder.append(nn.Sequential(
-                    nn.Conv1d(channels_input, channels_H, kernel_size, stride),
-                    nn.ReLU(),
+        #     if i == 0:
+        #         # no relu at end
+        #         self.decoder.append(nn.Sequential(
+        #             nn.Conv1d(channels_H, channels_H * 2, 1), 
+        #             nn.GLU(dim=1),
+        #             nn.ConvTranspose1d(channels_H, channels_output, kernel_size, stride)
+        #         ))
+        #     else:
+        #         self.decoder.insert(0, nn.Sequential(
+        #             nn.Conv1d(channels_H, channels_H * 2, 1), 
+        #             nn.GLU(dim=1),
+        #             nn.ConvTranspose1d(channels_H, channels_output, kernel_size, stride),
+        #             nn.ReLU()
+        #         ))
+        #     channels_output = channels_H
+            
+        #     # double H but keep below max_H
+        #     channels_H *= 2
+        #     channels_H = min(channels_H, max_H)
+        
+        for i in range(encoder_n_layers):
+            self.encoder.append(nn.Sequential(
+                nn.Conv1d(channels_input, channels_H, kernel_size, stride),
+                nn.ReLU(),
+                nn.Conv1d(channels_H, channels_H * 2, 1), 
+                nn.GLU(dim=1)
+            ))
+            channels_input = channels_H
+
+            if i == 0:
+                # no relu at end
+                self.decoder.append(nn.Sequential(
                     nn.Conv1d(channels_H, channels_H * 2, 1), 
-                    nn.GLU(dim=1)
+                    nn.GLU(dim=1),
+                    nn.Upsample(scale_factor=stride, mode='nearest'),
+                    nn.Conv1d(channels_H, channels_output, kernel_size, stride=1, padding=(kernel_size - 1) // 2)
                 ))
-                channels_input = channels_H
-                if i == 0:
-                    # no relu at end
-                    self.decoder.append(nn.Sequential(
-                        nn.Conv1d(channels_H, channels_H * 2, 1), 
-                        nn.GLU(dim=1),
-                        nn.ConvTranspose1d(channels_H, channels_output, kernel_size, stride)
-                    ))
-                else:
-                    self.decoder.insert(0, nn.Sequential(
-                        nn.Conv1d(channels_H, channels_H * 2, 1), 
-                        nn.GLU(dim=1),
-                        nn.ConvTranspose1d(channels_H, channels_output, kernel_size, stride),
-                        nn.ReLU()
-                    ))
-                channels_output = channels_H
+            else:
+                self.decoder.insert(0, nn.Sequential(
+                    nn.Conv1d(channels_H, channels_H * 2, 1), 
+                    nn.GLU(dim=1),
+                    nn.Upsample(scale_factor=stride, mode='nearest'),
+                    nn.Conv1d(channels_H, channels_output, kernel_size, stride=1, padding=(kernel_size - 1) // 2),
+                    nn.ReLU()
+                ))
+            channels_output = channels_H
             
             # double H but keep below max_H
             channels_H *= 2
@@ -381,7 +347,6 @@ class CleanUNet(nn.Module):
         for layer in self.modules():
             if isinstance(layer, (nn.Conv1d, nn.ConvTranspose1d)):
                 weight_scaling_init(layer)
-    # @profile
     def forward(self, noisy_audio):
         # (B, L) -> (B, C, L)
         if len(noisy_audio.shape) == 2:
@@ -392,17 +357,13 @@ class CleanUNet(nn.Module):
         # normalization and padding
         std = noisy_audio.std(dim=2, keepdim=True) + 1e-3
         noisy_audio /= std
-        if self.bilinear or self.nearest:
-            x = padding1(noisy_audio, self.encoder_n_layers, self.kernel_size, self.stride)
-        else:
-            x = padding(noisy_audio, self.encoder_n_layers, self.kernel_size, self.stride)
+        x = padding(noisy_audio, self.encoder_n_layers, self.kernel_size, self.stride)
+        
         # encoder
         skip_connections = []
-        # print("start of encoder: ",x.shape)
         for downsampling_block in self.encoder:
             x = downsampling_block(x)
             skip_connections.append(x)
-            # print(x.shape)
         skip_connections = skip_connections[::-1]
 
         # attention mask for causal inference; for non-causal, set attn_mask to None
@@ -416,17 +377,13 @@ class CleanUNet(nn.Module):
         x = self.tsfm_conv2(x)  # C 512 -> 1024
 
         # decoder
-        # print("start of decoder: ",x.shape)
         for i, upsampling_block in enumerate(self.decoder):
             skip_i = skip_connections[i]
-            x = x + skip_i[:, :, :x.shape[-1]]
+            x += skip_i[:, :, :x.shape[-1]]
             x = upsampling_block(x)
-            # print(x.shape)
-
 
         x = x[:, :, :L] * std
         return x
-
 
 if __name__ == '__main__':
     import json
@@ -443,15 +400,21 @@ if __name__ == '__main__':
     config = json.loads(data)
     network_config = config["network_config"]
 
-    model = CleanUNet(**network_config).cuda()
+    # model = CleanUNet(**network_config).cuda()
+    model = CleanUNet(**network_config)
+
     from util import print_size
     print_size(model, keyword="tsfm")
     
-    input_data = torch.ones([4,1,int(4.5*16000)]).cuda()
+    # input_data = torch.ones([4,1,int(4.5*16000)]).cuda()
+    input_data = torch.ones([4,1,int(4.5*16000)])
+
     output = model(input_data)
     print(output.shape)
 
-    y = torch.rand([4,1,int(4.5*16000)]).cuda()
+    # y = torch.rand([4,1,int(4.5*16000)]).cuda()
+    y = torch.rand([4,1,int(4.5*16000)])
+
     loss = torch.nn.MSELoss()(y, output)
     loss.backward()
     print(loss.item())

@@ -60,6 +60,7 @@ def denoise(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
     device = 'cuda' if gpu else 'cpu'
     if(gpu):
         assert torch.cuda.is_available()
+    print(opt_config)
     net = CleanUNet(**network_config, **opt_config).to(device)
     print_size(net)
 
@@ -70,6 +71,8 @@ def denoise(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
     if ckpt_iter != 'pretrained':
         ckpt_iter = int(ckpt_iter)
     model_path = os.path.join(ckpt_directory, '{}.pkl'.format(ckpt_iter))
+    print('model_path:', model_path)
+    print('optim option: ', opt_config)
     checkpoint = torch.load(model_path, map_location='cpu')
     net.load_state_dict(checkpoint['model_state_dict'])
     net.eval()
@@ -99,22 +102,21 @@ def denoise(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
                 # noisy_audio = noisy_audio.cuda()
             clean_audio, noisy_audio = clean_audio.to(device), noisy_audio.to(device)
 
-            filename = sortkey(fileid[0][0])
+            filename = fileid[0][0].split('/')[-1]
     
             LENGTH = len(noisy_audio[0].squeeze())
             start_time = time.time()
             generated_audio = sampling(net, noisy_audio)
-            
+            end_time = time.time()
+            elapsed_time = end_time - start_time            
             if dump:
-                wavwrite(os.path.join(speech_directory, 'enhanced_{}'.format(filename)), 
+                wavwrite(os.path.join(speech_directory, filename),
                         trainset_config["sample_rate"],
                         generated_audio[0].squeeze().cpu().numpy())
             else:
                 all_clean_audio.append(clean_audio[0].squeeze().cpu().numpy())
                 all_generated_audio.append(generated_audio[0].squeeze().cpu().numpy())
                 
-            end_time = time.time()
-            elapsed_time = end_time - start_time
             avg_time += elapsed_time
             pbar.set_postfix({"Average Time": f"{avg_time / iter:.6f}"})
             pbar.update(1)
@@ -125,6 +127,7 @@ def denoise(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
             iter+=1
 
     print("Average time: ", avg_time / iter)
+    print("Total time: ", avg_time)
     return all_clean_audio, all_generated_audio
 
 
@@ -142,7 +145,6 @@ if __name__ == "__main__":
     
 
     args = parser.parse_args()
-
     # Parse configs. Globals nicer in this case
     with open(args.config) as f:
         data = f.read()
@@ -154,11 +156,8 @@ if __name__ == "__main__":
     train_config            = config["train_config"]        # train config
     global trainset_config
     trainset_config         = config["trainset_config"]     # to read trainset configurations
-    if args.opt==True:
-        global opt_config
-        opt_config         = config["opt_config"] 
-    else:
-        opt_config          = {}
+    global opt_config
+    opt_config              = config["opt_config"] 
 
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = True
