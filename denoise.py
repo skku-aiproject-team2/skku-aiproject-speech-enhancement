@@ -10,8 +10,6 @@ import torch.nn as nn
 from torch.utils.data import Subset
 # from torch.utils.tensorboard import SummaryWriter
 
-import time
-
 import random
 random.seed(0)
 torch.manual_seed(0)
@@ -91,6 +89,7 @@ def denoise(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
     sortkey = lambda name: '_'.join(name.split('/')[-1].split('_')[1:])
 
     avg_time = 0
+
     iter = 1
     with tqdm(total = num) as pbar:
         for clean_audio, noisy_audio, fileid in dataloader:
@@ -126,6 +125,7 @@ def denoise(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
             iter+=1
 
     print("Average time: ", avg_time / iter)
+
     return all_clean_audio, all_generated_audio
 
 

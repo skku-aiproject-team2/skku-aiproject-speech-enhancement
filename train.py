@@ -52,6 +52,8 @@ from stft_loss import MultiResolutionSTFTLoss
 from util import rescale, find_max_epoch, print_size
 from util import LinearWarmupCosineDecay, loss_fn
 
+from torch.cuda.amp import GradScaler, autocast
+
 from network import CleanUNet
 
 
@@ -102,6 +104,7 @@ def train(num_gpus, rank, group_name,
 
     # define optimizer
     optimizer = torch.optim.Adam(net.parameters(), lr=optimization["learning_rate"])
+    scaler = GradScaler()
 
     # load checkpoint
     time0 = time.time()
@@ -109,6 +112,7 @@ def train(num_gpus, rank, group_name,
         ckpt_iter = find_max_epoch(ckpt_directory)
     else:
         ckpt_iter = log["ckpt_iter"]
+
     if ckpt_iter >= 0:
         try:
             # load checkpoint file
@@ -150,6 +154,7 @@ def train(num_gpus, rank, group_name,
         mrstftloss = None
     
     pbar = tqdm(total=optimization["n_iters"], initial=n_iter, dynamic_ncols=True)
+    
     while n_iter < optimization["n_iters"] + 1:
         # for each epoch
         for clean_audio, noisy_audio, _ in trainloader: 
@@ -170,11 +175,21 @@ def train(num_gpus, rank, group_name,
                 reduced_loss = reduce_tensor(loss.data, num_gpus).item()
             else:
                 reduced_loss = loss.item()
-            loss.backward()
-            grad_norm = nn.utils.clip_grad_norm_(net.parameters(), 1e9)
-            scheduler.step()
-            optimizer.step()
+                
+            scaler.scale(loss).backward()
 
+            # scaler.unscale_(optimizer)  # Unscale the gradients before clipping
+            # grad_norm = nn.utils.clip_grad_norm_(net.parameters(), 1e9)
+    
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
+            
+            # loss.backward()
+            # grad_norm = nn.utils.clip_grad_norm_(net.parameters(), 1e9)
+            # scheduler.step()
+            # optimizer.step()
+                
             # output to log
             if n_iter % log["iters_per_valid"] == 0:
 
@@ -197,7 +212,7 @@ def train(num_gpus, rank, group_name,
                 tb.add_scalar("Valid/Valid-Loss", valid_loss, n_iter)
                 tb.add_scalar("Train/Train-Loss", loss.item(), n_iter)
                 tb.add_scalar("Train/Train-Reduced-Loss", reduced_loss, n_iter)
-                tb.add_scalar("Train/Gradient-Norm", grad_norm, n_iter)
+                # tb.add_scalar("Train/Gradient-Norm", grad_norm, n_iter)
                 tb.add_scalar("Train/learning-rate", optimizer.param_groups[0]["lr"], n_iter)
 
             # save checkpoint

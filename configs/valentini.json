@@ -16,8 +16,13 @@
         "exp_path": "valentini",
         "log":{
             "directory": "./exp",
+<<<<<<< HEAD
             "ckpt_iter": "max",
             "iters_per_ckpt": 2500,
+=======
+            "ckpt_iter": 0,
+            "iters_per_ckpt": 25000,
+>>>>>>> mptraining
             "iters_per_valid": 500
         },
         "optimization":{
@@ -40,7 +45,11 @@
         }
     },
     "trainset_config": {
+<<<<<<< HEAD
         "root": "../CleanUNet/dataset_mini",
+=======
+        "root": "../CleanUNet/dataset_mini_5percent",
+>>>>>>> mptraining
         "crop_length_sec": 1,
         "sample_rate": 48000
     },
@@ -50,9 +59,12 @@
     "dist_config": {
         "dist_backend": "nccl",
         "dist_url": "tcp://localhost:54321"
+<<<<<<< HEAD
     },
     "opt_config": {
         "Efficient_Attention": true,
         "ONNX": true
+=======
+>>>>>>> mptraining
     }
 }
