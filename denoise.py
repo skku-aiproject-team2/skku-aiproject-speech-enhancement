@@ -38,8 +38,6 @@ import torch
 import torch.nn as nn
 # from torch.utils.tensorboard import SummaryWriter
 
-import time
-
 import random
 random.seed(0)
 torch.manual_seed(0)
@@ -111,7 +109,6 @@ def denoise(output_directory, ckpt_iter, subset, dump=False):
 
     avg_time = 0
     for clean_audio, noisy_audio, fileid in tqdm(dataloader):
-        start_time = time.time()
         filename = sortkey(fileid[0][0])
 
         noisy_audio = noisy_audio.cuda()
@@ -126,11 +123,6 @@ def denoise(output_directory, ckpt_iter, subset, dump=False):
         else:
             all_clean_audio.append(clean_audio[0].squeeze().cpu().numpy())
             all_generated_audio.append(generated_audio[0].squeeze().cpu().numpy())
-            
-        end_time = time.time()
-        print("Time: ", end_time - start_time)
-
-        avg_time += end_time - start_time
 
     print("Average time: ", avg_time / len(dataloader))
     return all_clean_audio, all_generated_audio
