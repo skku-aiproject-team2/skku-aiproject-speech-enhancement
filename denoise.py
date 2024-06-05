@@ -22,10 +22,10 @@ from scipy.io.wavfile import read as wavread
 
 from dataset import load_CleanNoisyPairDataset
 from util import rescale, find_max_epoch, print_size, sampling
-from network import CleanUNet
+from network import CleanUNet, CleanUNet_bilinear
 
 
-def denoise(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
+def denoise(output_directory, ckpt_iter, subset, num, gpu, dump=False):
     """
     Denoise audio
 
@@ -36,7 +36,6 @@ def denoise(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
     subset (str):                   training, testing, validation
     num (int):                      number of samples to use in inference, use all if 0.
     gpu (bool):                     whether to run on gpu
-    opt (bool):                     wheter to use optimazation scheme
     dump (bool):                    whether save enhanced (denoised) audio
     """
 
@@ -61,7 +60,10 @@ def denoise(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
     if(gpu):
         assert torch.cuda.is_available()
     print(opt_config)
-    net = CleanUNet(**network_config, **opt_config).to(device)
+    if("bilinear" in opt_config.keys() and opt_config["bilinear"] == True):
+        net = CleanUNet_bilinear(**network_config).to(device)
+    else:
+        net = CleanUNet(**network_config).to(device)
     print_size(net)
 
     # load checkpoint
@@ -96,10 +98,6 @@ def denoise(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
     iter = 1
     with tqdm(total = num) as pbar:
         for clean_audio, noisy_audio, fileid in dataloader:
-            # if not gpu:
-                # clean_audio, noisy_audio = clean_audio.to('cpu'), noisy_audio.to('cpu')
-            # else:
-                # noisy_audio = noisy_audio.cuda()
             clean_audio, noisy_audio = clean_audio.to(device), noisy_audio.to(device)
 
             filename = fileid[0][0].split('/')[-1]
@@ -141,7 +139,6 @@ if __name__ == "__main__":
                         default='testing', help='subset for denoising')
     parser.add_argument('-n','--num', type=int, default=0, help='number of samples to use in inference')
     parser.add_argument('-cpu', '--cpu', action='store_true', help='Use CPU instead of GPU')
-    parser.add_argument('-opt', '--opt', action='store_true', help='Use optimization')
     
 
     args = parser.parse_args()
@@ -163,7 +160,6 @@ if __name__ == "__main__":
     torch.backends.cudnn.benchmark = True
 
     gpu = not args.cpu
-    opt = args.opt
     
     if args.subset == "testing":
         with torch.no_grad():
@@ -172,6 +168,5 @@ if __name__ == "__main__":
                     ckpt_iter=args.ckpt_iter,
                     num=args.num,
                     gpu=gpu,
-                    opt=opt,
                     dump=True)
     

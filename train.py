@@ -52,7 +52,7 @@ from stft_loss import MultiResolutionSTFTLoss
 from util import rescale, find_max_epoch, print_size
 from util import LinearWarmupCosineDecay, loss_fn
 
-from network import CleanUNet
+from network import CleanUNet, CleanUNet_bilinear
 
 
 def train(num_gpus, rank, group_name, 
@@ -93,7 +93,10 @@ def train(num_gpus, rank, group_name,
     print('Data loaded')
     
     # predefine model
-    net = CleanUNet(**network_config,**opt_config).cuda()
+    if("bilinear" in opt_config.keys() and opt_config["bilinear"] == True):
+        net = CleanUNet_bilinear(**network_config).cuda()
+    else:
+        net = CleanUNet(**network_config).cuda()
     print_size(net)
 
     # apply gradient all reduce
@@ -228,7 +231,6 @@ if __name__ == "__main__":
                         help='rank of process for distributed')
     parser.add_argument('-g', '--group_name', type=str, default='',
                         help='name of group for distributed')
-    parser.add_argument('-opt', '--opt', action='store_true', help='Use optimization')
 
     args = parser.parse_args()
 
