@@ -51,9 +51,6 @@ from dataset import load_CleanNoisyPairDataset
 from stft_loss import MultiResolutionSTFTLoss
 from util import rescale, find_max_epoch, print_size
 from util import LinearWarmupCosineDecay, loss_fn
-import wandb
-import time
-import datetime
 
 from torch.cuda.amp import GradScaler, autocast
 
@@ -71,11 +68,6 @@ def train(num_gpus, rank, group_name,
     log_directory = os.path.join(log["directory"], exp_path)
     if rank == 0:
         tb = SummaryWriter(os.path.join(log_directory, 'tensorboard'))
-        wandb.init(project="AI_project", config={
-            "exp_path": exp_path,
-            **optimization,
-            **loss_config,
-        })
 
     # distributed running initialization
     if num_gpus > 1:
@@ -163,8 +155,6 @@ def train(num_gpus, rank, group_name,
     
     pbar = tqdm(total=optimization["n_iters"], initial=n_iter, dynamic_ncols=True)
     
-    start = time.time()
-
     while n_iter < optimization["n_iters"] + 1:
         # for each epoch
         for clean_audio, noisy_audio, _ in trainloader: 
@@ -199,15 +189,6 @@ def train(num_gpus, rank, group_name,
             # grad_norm = nn.utils.clip_grad_norm_(net.parameters(), 1e9)
             # scheduler.step()
             # optimizer.step()
-
-            if rank == 0:
-                wandb.log({
-                    "Train/Train-Loss": loss.item(),
-                    "Train/Train-Reduced-Loss": reduced_loss,
-                    # "Train/Gradient-Norm": grad_norm,
-                    "Train/Learning-Rate": optimizer.param_groups[0]["lr"],
-                    "Iteration": n_iter
-                })
                 
             # output to log
             if n_iter % log["iters_per_valid"] == 0:
@@ -233,10 +214,6 @@ def train(num_gpus, rank, group_name,
                 tb.add_scalar("Train/Train-Reduced-Loss", reduced_loss, n_iter)
                 # tb.add_scalar("Train/Gradient-Norm", grad_norm, n_iter)
                 tb.add_scalar("Train/learning-rate", optimizer.param_groups[0]["lr"], n_iter)
-                wandb.log({
-                        "Valid/Valid-Loss": valid_loss,
-                        "Iteration": n_iter
-                    })
 
             # save checkpoint
             if n_iter > 0 and n_iter % log["iters_per_ckpt"] == 0 and rank == 0:
@@ -251,10 +228,6 @@ def train(num_gpus, rank, group_name,
             n_iter += 1
             pbar.update(1)
 
-    end = time.time()
-    sec = end-start
-    result_list = str(datetime.timedelta(seconds=sec)).split(".")
-    print(result_list[0])
     # After training, close TensorBoard.
     if rank == 0:
         tb.close()
