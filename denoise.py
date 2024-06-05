@@ -20,10 +20,10 @@ from scipy.io.wavfile import read as wavread
 
 from dataset import load_CleanNoisyPairDataset
 from util import rescale, find_max_epoch, print_size, sampling
-from network import CleanUNet
+from network import CleanUNet, CleanUNet_bilinear
 
 
-def denoise(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
+def denoise(output_directory, ckpt_iter, subset, num, gpu, dump=False):
     """
     Denoise audio
 
@@ -34,7 +34,6 @@ def denoise(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
     subset (str):                   training, testing, validation
     num (int):                      number of samples to use in inference, use all if 0.
     gpu (bool):                     whether to run on gpu
-    opt (bool):                     wheter to use optimazation scheme
     dump (bool):                    whether save enhanced (denoised) audio
     """
 
@@ -58,7 +57,11 @@ def denoise(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
     device = 'cuda' if gpu else 'cpu'
     if(gpu):
         assert torch.cuda.is_available()
-    net = CleanUNet(**network_config, **opt_config).to(device)
+    print(opt_config)
+    if("bilinear" in opt_config.keys() and opt_config["bilinear"] == True):
+        net = CleanUNet_bilinear(**network_config).to(device)
+    else:
+        net = CleanUNet(**network_config).to(device)
     print_size(net)
 
     # load checkpoint
@@ -93,10 +96,6 @@ def denoise(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
     iter = 1
     with tqdm(total = num) as pbar:
         for clean_audio, noisy_audio, fileid in dataloader:
-            # if not gpu:
-                # clean_audio, noisy_audio = clean_audio.to('cpu'), noisy_audio.to('cpu')
-            # else:
-                # noisy_audio = noisy_audio.cuda()
             clean_audio, noisy_audio = clean_audio.to(device), noisy_audio.to(device)
 
             filename = fileid[0][0].split('/')[-1]
@@ -104,17 +103,16 @@ def denoise(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
             LENGTH = len(noisy_audio[0].squeeze())
             start_time = time.time()
             generated_audio = sampling(net, noisy_audio)
-            
+            end_time = time.time()
+            elapsed_time = end_time - start_time            
             if dump:
-                wavwrite(os.path.join(speech_directory, filename), 
+                wavwrite(os.path.join(speech_directory, filename),
                         trainset_config["sample_rate"],
                         generated_audio[0].squeeze().cpu().numpy())
             else:
                 all_clean_audio.append(clean_audio[0].squeeze().cpu().numpy())
                 all_generated_audio.append(generated_audio[0].squeeze().cpu().numpy())
                 
-            end_time = time.time()
-            elapsed_time = end_time - start_time
             avg_time += elapsed_time
             pbar.set_postfix({"Average Time": f"{avg_time / iter:.6f}"})
             pbar.update(1)
@@ -125,7 +123,7 @@ def denoise(output_directory, ckpt_iter, subset, num, gpu, opt, dump=False):
             iter+=1
 
     print("Average time: ", avg_time / iter)
-
+    print("Total time: ", avg_time)
     return all_clean_audio, all_generated_audio
 
 
@@ -139,11 +137,9 @@ if __name__ == "__main__":
                         default='testing', help='subset for denoising')
     parser.add_argument('-n','--num', type=int, default=0, help='number of samples to use in inference')
     parser.add_argument('-cpu', '--cpu', action='store_true', help='Use CPU instead of GPU')
-    parser.add_argument('-opt', '--opt', action='store_true', help='Use optimization')
     
 
     args = parser.parse_args()
-
     # Parse configs. Globals nicer in this case
     with open(args.config) as f:
         data = f.read()
@@ -155,17 +151,13 @@ if __name__ == "__main__":
     train_config            = config["train_config"]        # train config
     global trainset_config
     trainset_config         = config["trainset_config"]     # to read trainset configurations
-    if args.opt==True:
-        global opt_config
-        opt_config         = config["opt_config"] 
-    else:
-        opt_config          = {}
+    global opt_config
+    opt_config              = config["opt_config"] 
 
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = True
 
     gpu = not args.cpu
-    opt = args.opt
     
     if args.subset == "testing":
         with torch.no_grad():
@@ -174,6 +166,5 @@ if __name__ == "__main__":
                     ckpt_iter=args.ckpt_iter,
                     num=args.num,
                     gpu=gpu,
-                    opt=opt,
                     dump=True)
     

@@ -23,24 +23,15 @@ class ScaledDotProductAttention(nn.Module):
         self.dropout = nn.Dropout(attn_dropout)
 
     def forward(self, q, k, v, mask=None):
-        if(eff_attn): # memory efficient attention
-            scale_factor = self.temperature
-            attn_mask = torch.ones(q.size(0), k.size(0), dtype=torch.bool).tril(diagonal=0) if mask==None else mask
-            attn_mask = attn_mask.masked_fill(~attn_mask, -float('inf')) if attn_mask.dtype==torch.bool else attn_mask
-            attn_weight = F.softmax((q @ k.transpose(-2, -1) * scale_factor) + attn_mask, dim=-1)
-            attn_weight = self.dropout(attn_weight)
-            return attn_weight @ v, attn_weight
-            
-        else:
-            attn = torch.matmul(q / self.temperature, k.transpose(2, 3))
-    
-            if mask is not None:
-                attn = attn.masked_fill(mask == 0, -1e9)
-    
-            attn = self.dropout(F.softmax(attn, dim=-1))
-            output = torch.matmul(attn, v)
-    
-            return output, attn
+        attn = torch.matmul(q / self.temperature, k.transpose(2, 3))
+
+        if mask is not None:
+            attn = attn.masked_fill(mask == 0, -1e9)
+
+        attn = self.dropout(F.softmax(attn, dim=-1))
+        output = torch.matmul(attn, v)
+
+        return output, attn
 
 
 class MultiHeadAttention(nn.Module):
@@ -222,13 +213,46 @@ def padding(x, D, K, S):
             L = 1
         else:
             L = 1 + np.ceil((L - K) / S)
+            # L = np.ceil((L)/S)
 
     for _ in range(D):
         L = (L - 1) * S + K
-    
+        # L = L*S
     L = int(L)
     x = F.pad(x, (0, L - x.shape[-1]))
     return x
+
+def padding1(x, D, K, S): # padding for bilinear
+    """padding zeroes to x so that denoised audio has the same length"""
+
+    L = x.shape[-1]
+    for _ in range(D):
+        if L < K:
+            L = 1
+        else:
+            # L = 1 + np.ceil((L - K) / S)
+            L = np.ceil((L)/S)
+
+    for _ in range(D):
+        # L = (L - 1) * S + K
+        L = L*S
+    L = int(L)
+    x = F.pad(x, (0, L - x.shape[-1]))
+    return x
+
+
+class AverageChannels(nn.Module):
+    def __init__(self, factor):
+        super(AverageChannels, self).__init__()
+        self.factor = factor
+
+    def forward(self, x):
+        batch_size, channels, length = x.size()
+        # Reshape the input to (batch_size, channels // factor, factor, length)
+        x = x.view(batch_size, channels // self.factor, self.factor, length)
+        # Average over the factor dimension
+        x = x.mean(dim=2)
+        return x
 
 
 class CleanUNet(nn.Module):
@@ -240,7 +264,7 @@ class CleanUNet(nn.Module):
                  tsfm_n_layers=3, 
                  tsfm_n_head=8,
                  tsfm_d_model=512, 
-                 tsfm_d_inner=2048, **kwargs):
+                 tsfm_d_inner=2048):
         
         """
         Parameters:
@@ -271,14 +295,11 @@ class CleanUNet(nn.Module):
         self.tsfm_n_head = tsfm_n_head
         self.tsfm_d_model = tsfm_d_model
         self.tsfm_d_inner = tsfm_d_inner
-        global eff_attn
-        eff_attn = kwargs.get('Efficient_Attention', None)
-        self.onnx = kwargs.get('ONNX', None)
 
         # encoder and decoder
         self.encoder = nn.ModuleList()
         self.decoder = nn.ModuleList()
-
+        print("the model is vanilla")
         for i in range(encoder_n_layers):
             self.encoder.append(nn.Sequential(
                 nn.Conv1d(channels_input, channels_H, kernel_size, stride),
@@ -287,7 +308,6 @@ class CleanUNet(nn.Module):
                 nn.GLU(dim=1)
             ))
             channels_input = channels_H
-
             if i == 0:
                 # no relu at end
                 self.decoder.append(nn.Sequential(
@@ -326,7 +346,7 @@ class CleanUNet(nn.Module):
         for layer in self.modules():
             if isinstance(layer, (nn.Conv1d, nn.ConvTranspose1d)):
                 weight_scaling_init(layer)
-
+    # @profile
     def forward(self, noisy_audio):
         # (B, L) -> (B, C, L)
         if len(noisy_audio.shape) == 2:
@@ -338,12 +358,13 @@ class CleanUNet(nn.Module):
         std = noisy_audio.std(dim=2, keepdim=True) + 1e-3
         noisy_audio /= std
         x = padding(noisy_audio, self.encoder_n_layers, self.kernel_size, self.stride)
-        
         # encoder
         skip_connections = []
+        # print("start of encoder: ",x.shape)
         for downsampling_block in self.encoder:
             x = downsampling_block(x)
             skip_connections.append(x)
+            # print(x.shape)
         skip_connections = skip_connections[::-1]
 
         # attention mask for causal inference; for non-causal, set attn_mask to None
@@ -357,10 +378,151 @@ class CleanUNet(nn.Module):
         x = self.tsfm_conv2(x)  # C 512 -> 1024
 
         # decoder
+        # print("start of decoder: ",x.shape)
         for i, upsampling_block in enumerate(self.decoder):
             skip_i = skip_connections[i]
             x = x + skip_i[:, :, :x.shape[-1]]
             x = upsampling_block(x)
+            # print(x.shape)
+
+
+        x = x[:, :, :L] * std
+        return x
+
+class CleanUNet_bilinear(nn.Module):
+    """ CleanUNet architecture. """
+
+    def __init__(self, channels_input=1, channels_output=1,
+                 channels_H=64, max_H=768,
+                 encoder_n_layers=8, kernel_size=4, stride=2,
+                 tsfm_n_layers=3, 
+                 tsfm_n_head=8,
+                 tsfm_d_model=512, 
+                 tsfm_d_inner=2048):
+        
+        """
+        Parameters:
+        channels_input (int):   input channels
+        channels_output (int):  output channels
+        channels_H (int):       middle channels H that controls capacity
+        max_H (int):            maximum H
+        encoder_n_layers (int): number of encoder/decoder layers D
+        kernel_size (int):      kernel size K
+        stride (int):           stride S
+        tsfm_n_layers (int):    number of self attention blocks N
+        tsfm_n_head (int):      number of heads in each self attention block
+        tsfm_d_model (int):     d_model of self attention
+        tsfm_d_inner (int):     d_inner of self attention
+        """
+
+        super(CleanUNet_bilinear, self).__init__()
+
+        self.channels_input = channels_input
+        self.channels_output = channels_output
+        self.channels_H = channels_H
+        self.max_H = max_H
+        self.encoder_n_layers = encoder_n_layers
+        self.kernel_size = kernel_size
+        self.stride = stride
+
+        self.tsfm_n_layers = tsfm_n_layers
+        self.tsfm_n_head = tsfm_n_head
+        self.tsfm_d_model = tsfm_d_model
+        self.tsfm_d_inner = tsfm_d_inner
+        # encoder and decoder
+        self.encoder = nn.ModuleList()
+        self.decoder = nn.ModuleList()
+
+        print("The model is bilinear")
+        for i in range(encoder_n_layers):
+            self.encoder.append(nn.Sequential(
+                nn.Conv1d(channels_input, channels_H, kernel_size, stride, padding=1),
+                nn.ReLU(),
+                nn.Conv1d(channels_H, channels_H * 2, 1), 
+                nn.GLU(dim=1)
+            ))
+            channels_input = channels_H
+            if i == 0:
+                # no relu at end
+                self.decoder.append(nn.Sequential(
+                    nn.Conv1d(channels_H, channels_H * 2, 1), 
+                    nn.GLU(dim=1),
+                    nn.Upsample(scale_factor=stride, mode='linear', align_corners=False),
+                    AverageChannels(factor=4),
+                    nn.Conv1d(channels_H//4, channels_output, kernel_size, padding='same')
+                ))
+            else:
+                self.decoder.insert(0, nn.Sequential(
+                    nn.Conv1d(channels_H, channels_H * 2, 1), 
+                    nn.GLU(dim=1),
+                    nn.Upsample(scale_factor=stride, mode='linear', align_corners=False),
+                    AverageChannels(factor=4),
+                    nn.Conv1d(channels_H//4, channels_output, kernel_size, padding='same'),
+                    nn.ReLU()
+                ))
+            channels_output = channels_H
+            
+            # double H but keep below max_H
+            channels_H *= 2
+            channels_H = min(channels_H, max_H)
+        
+        # self attention block
+        self.tsfm_conv1 = nn.Conv1d(channels_output, tsfm_d_model, kernel_size=1)
+        self.tsfm_encoder = TransformerEncoder(d_word_vec=tsfm_d_model, 
+                                               n_layers=tsfm_n_layers, 
+                                               n_head=tsfm_n_head, 
+                                               d_k=tsfm_d_model // tsfm_n_head, 
+                                               d_v=tsfm_d_model // tsfm_n_head, 
+                                               d_model=tsfm_d_model, 
+                                               d_inner=tsfm_d_inner, 
+                                               dropout=0.0, 
+                                               n_position=0, 
+                                               scale_emb=False)
+        self.tsfm_conv2 = nn.Conv1d(tsfm_d_model, channels_output, kernel_size=1)
+
+        # weight scaling initialization
+        for layer in self.modules():
+            if isinstance(layer, (nn.Conv1d, nn.ConvTranspose1d)):
+                weight_scaling_init(layer)
+    # @profile
+    def forward(self, noisy_audio):
+        # (B, L) -> (B, C, L)
+        if len(noisy_audio.shape) == 2:
+            noisy_audio = noisy_audio.unsqueeze(1)
+        B, C, L = noisy_audio.shape
+        assert C == 1
+        
+        # normalization and padding
+        std = noisy_audio.std(dim=2, keepdim=True) + 1e-3
+        noisy_audio /= std
+        x = padding1(noisy_audio, self.encoder_n_layers, self.kernel_size, self.stride)
+        # encoder
+        skip_connections = []
+        # print("start of encoder: ",x.shape)
+        for downsampling_block in self.encoder:
+            x = downsampling_block(x)
+            skip_connections.append(x)
+            # print(x.shape)
+        skip_connections = skip_connections[::-1]
+
+        # attention mask for causal inference; for non-causal, set attn_mask to None
+        len_s = x.shape[-1]  # length at bottleneck
+        attn_mask = (1 - torch.triu(torch.ones((1, len_s, len_s), device=x.device), diagonal=1)).bool()
+
+        x = self.tsfm_conv1(x)  # C 1024 -> 512
+        x = x.permute(0, 2, 1)
+        x = self.tsfm_encoder(x, src_mask=attn_mask)
+        x = x.permute(0, 2, 1)
+        x = self.tsfm_conv2(x)  # C 512 -> 1024
+
+        # decoder
+        # print("start of decoder: ",x.shape)
+        for i, upsampling_block in enumerate(self.decoder):
+            skip_i = skip_connections[i]
+            x = x + skip_i[:, :, :x.shape[-1]]
+            x = upsampling_block(x)
+            # print(x.shape)
+
 
         x = x[:, :, :L] * std
         return x
