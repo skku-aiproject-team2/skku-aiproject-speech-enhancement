@@ -54,15 +54,24 @@ class CleanNoisyPairDataset(Dataset):
 
     def __getitem__(self, n):
         fileid = self.files[n]
-        clean_audio, sample_rate = torchaudio.load(fileid[0])
-        noisy_audio, sample_rate = torchaudio.load(fileid[1])
+        clean_audio, sample_rate_clean = torchaudio.load(fileid[0])
+        noisy_audio, sample_rate_noisy = torchaudio.load(fileid[1])
         clean_audio, noisy_audio = clean_audio.squeeze(0), noisy_audio.squeeze(0)
-        assert len(clean_audio) == len(noisy_audio)
+        assert len(clean_audio) == len(noisy_audio) and sample_rate_clean == sample_rate_noisy
 
-        crop_length = int(self.crop_length_sec * sample_rate)
+        # resample audios to self.sample_rate
+        if sample_rate_clean != self.sample_rate:
+            resample = torchaudio.transforms.Resample(orig_freq=sample_rate_clean, new_freq=self.sample_rate)
+            clean_audio = resample(clean_audio)
+            noisy_audio = resample(noisy_audio)
+
+        crop_length = int(self.crop_length_sec * self.sample_rate)
         
         if crop_length > len(clean_audio):
-            crop_length = len(clean_audio)
+            # repeat the audio to match the crop length
+            n_repeats = crop_length // len(clean_audio) + 1
+            clean_audio = clean_audio.repeat(n_repeats)
+            noisy_audio = noisy_audio.repeat(n_repeats)
 
         # random crop
         if self.subset != 'testing' and crop_length > 0:
@@ -75,18 +84,6 @@ class CleanNoisyPairDataset(Dataset):
 
     def __len__(self):
         return len(self.files)
-    
-    def pad_collate_fn(self, batch, max_length=144000):
-        if len(batch) == 1:
-            return batch[0]
-        
-        max_length = self.crop_length_sec * self.sample_rate
-        clean_audios, noisy_audios, fileids = zip(*batch)
-        
-        padded_clean_audios = [torch.nn.functional.pad(audio, (0, max_length - audio.shape[-1])) for audio in clean_audios]
-        padded_noisy_audios = [torch.nn.functional.pad(audio, (0, max_length - audio.shape[-1])) for audio in noisy_audios]
-
-        return torch.stack(padded_clean_audios), torch.stack(padded_noisy_audios), fileids
 
 
 def load_CleanNoisyPairDataset(root, subset, crop_length_sec, batch_size, sample_rate, num_gpus=1):
@@ -98,9 +95,9 @@ def load_CleanNoisyPairDataset(root, subset, crop_length_sec, batch_size, sample
 
     if num_gpus > 1:
         train_sampler = DistributedSampler(dataset)
-        dataloader = torch.utils.data.DataLoader(dataset, sampler=train_sampler, **kwargs, collate_fn=dataset.pad_collate_fn)
+        dataloader = torch.utils.data.DataLoader(dataset, sampler=train_sampler, **kwargs)
     else:
-        dataloader = torch.utils.data.DataLoader(dataset, sampler=None, shuffle=True, **kwargs, collate_fn=dataset.pad_collate_fn)
+        dataloader = torch.utils.data.DataLoader(dataset, sampler=None, shuffle=True, **kwargs)
         
     return dataloader
 
