@@ -54,12 +54,18 @@ class CleanNoisyPairDataset(Dataset):
 
     def __getitem__(self, n):
         fileid = self.files[n]
-        clean_audio, sample_rate = torchaudio.load(fileid[0])
-        noisy_audio, sample_rate = torchaudio.load(fileid[1])
+        clean_audio, sample_rate_clean = torchaudio.load(fileid[0])
+        noisy_audio, sample_rate_noisy = torchaudio.load(fileid[1])
         clean_audio, noisy_audio = clean_audio.squeeze(0), noisy_audio.squeeze(0)
-        assert len(clean_audio) == len(noisy_audio)
+        assert len(clean_audio) == len(noisy_audio) and sample_rate_clean == sample_rate_noisy
 
-        crop_length = int(self.crop_length_sec * sample_rate)
+        # resample audios to self.sample_rate
+        if sample_rate_clean != self.sample_rate:
+            resample = torchaudio.transforms.Resample(orig_freq=sample_rate_clean, new_freq=self.sample_rate)
+            clean_audio = resample(clean_audio)
+            noisy_audio = resample(noisy_audio)
+
+        crop_length = int(self.crop_length_sec * self.sample_rate)
         
         if crop_length > len(clean_audio):
             # repeat the audio to match the crop length
