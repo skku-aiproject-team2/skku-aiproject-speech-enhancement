@@ -215,7 +215,7 @@ def loss_fn(net, X, ell_p, ell_p_lambda, stft_lambda, mrstftloss, **kwargs):
             ae_loss = F.l1_loss(denoised_audio, clean_audio)
         else:
             raise NotImplementedError
-        # loss += ae_loss * ell_p_lambda
+        loss += ae_loss * ell_p_lambda
         output_dic["reconstruct"] = ae_loss.data * ell_p_lambda
     
         if stft_lambda > 0:
