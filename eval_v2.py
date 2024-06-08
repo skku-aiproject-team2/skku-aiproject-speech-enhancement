@@ -34,8 +34,9 @@ def evaluate(clean_path, denoised_path):
         
         resample = torchaudio.transforms.Resample(orig_freq=rate, new_freq=16000)
         clean = resample(clean)
-        denoised = resample(denoised)
 
+        clean = clean.numpy()
+        denoised = denoised.numpy()
         length = clean.shape[-1]
 
         result['pesq_wb'] += pesq(16000, clean, denoised, 'wb') * length
