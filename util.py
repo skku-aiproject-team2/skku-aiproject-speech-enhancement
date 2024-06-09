@@ -180,7 +180,7 @@ def sampling(net, noisy_audio):
     return net(noisy_audio)
 
 
-def loss_fn(net, X, ell_p, ell_p_lambda, stft_lambda, mrstftloss, **kwargs):
+def loss_fn(net, X, ell_p, ell_p_lambda, stft_lambda, mrstftloss, use_mp, **kwargs):
     """
     Loss function in CleanUNet
 
@@ -206,9 +206,27 @@ def loss_fn(net, X, ell_p, ell_p_lambda, stft_lambda, mrstftloss, **kwargs):
     
     # AE loss
     # mixed precision training
-    with autocast():
+    if use_mp:
+        with autocast():
+            denoised_audio = net(noisy_audio)  
+
+            if ell_p == 2:
+                ae_loss = nn.MSELoss()(denoised_audio, clean_audio)
+            elif ell_p == 1:
+                ae_loss = F.l1_loss(denoised_audio, clean_audio)
+            else:
+                raise NotImplementedError
+            loss += ae_loss * ell_p_lambda
+            output_dic["reconstruct"] = ae_loss.data * ell_p_lambda
+
+            if stft_lambda > 0:
+                sc_loss, mag_loss = mrstftloss(denoised_audio.squeeze(1), clean_audio.squeeze(1))
+                loss += (sc_loss + mag_loss) * stft_lambda
+                output_dic["stft_sc"] = sc_loss.data * stft_lambda
+                output_dic["stft_mag"] = mag_loss.data * stft_lambda
+    else:
         denoised_audio = net(noisy_audio)  
-    
+
         if ell_p == 2:
             ae_loss = nn.MSELoss()(denoised_audio, clean_audio)
         elif ell_p == 1:
@@ -217,12 +235,11 @@ def loss_fn(net, X, ell_p, ell_p_lambda, stft_lambda, mrstftloss, **kwargs):
             raise NotImplementedError
         loss += ae_loss * ell_p_lambda
         output_dic["reconstruct"] = ae_loss.data * ell_p_lambda
-    
+
         if stft_lambda > 0:
             sc_loss, mag_loss = mrstftloss(denoised_audio.squeeze(1), clean_audio.squeeze(1))
             loss += (sc_loss + mag_loss) * stft_lambda
             output_dic["stft_sc"] = sc_loss.data * stft_lambda
             output_dic["stft_mag"] = mag_loss.data * stft_lambda
-    
-        return loss, output_dic
+    return loss, output_dic
 

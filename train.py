@@ -54,7 +54,7 @@ from util import LinearWarmupCosineDecay, loss_fn
 
 from torch.cuda.amp import GradScaler, autocast
 
-from network import CleanUNet, CleanUNet_bilinear
+from network import CleanUNet, CleanUNet_bilinear, CleanUNet_bilinear_lightConv
 
 
 def train(num_gpus, rank, group_name, 
@@ -97,8 +97,13 @@ def train(num_gpus, rank, group_name,
     # predefine model
     if("bilinear" in opt_config.keys() and opt_config["bilinear"] == True):
         net = CleanUNet_bilinear(**network_config).cuda()
+        mp = True
+    elif ("light_conv" in opt_config.keys() and opt_config["light_conv"] == True):
+        net = CleanUNet_bilinear_lightConv(**network_config).cuda()
+        mp = False
     else:
         net = CleanUNet(**network_config).cuda()
+        mp = False
     print_size(net)
 
     # apply gradient all reduce
@@ -173,25 +178,22 @@ def train(num_gpus, rank, group_name,
             # back-propagation
             optimizer.zero_grad()
             X = (clean_audio, noisy_audio)
-            loss, loss_dic = loss_fn(net, X, **loss_config, mrstftloss=mrstftloss)
+            loss, loss_dic = loss_fn(net, X, **loss_config, mrstftloss=mrstftloss, use_mp = mp)
             if num_gpus > 1:
                 reduced_loss = reduce_tensor(loss.data, num_gpus).item()
             else:
                 reduced_loss = loss.item()
-                
-            scaler.scale(loss).backward()
-
-            # scaler.unscale_(optimizer)  # Unscale the gradients before clipping
-            # grad_norm = nn.utils.clip_grad_norm_(net.parameters(), 1e9)
-    
-            scaler.step(optimizer)
-            scaler.update()
-            scheduler.step()
             
-            # loss.backward()
-            # grad_norm = nn.utils.clip_grad_norm_(net.parameters(), 1e9)
-            # scheduler.step()
-            # optimizer.step()
+            if mp:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+                scheduler.step()
+            else:
+                loss.backward()
+                grad_norm = nn.utils.clip_grad_norm_(net.parameters(), 1e9)
+                scheduler.step()
+                optimizer.step()
                 
             # output to log
             if n_iter % log["iters_per_valid"] == 0:
@@ -203,7 +205,7 @@ def train(num_gpus, rank, group_name,
                         clean_audio = clean_audio.cuda()
                         noisy_audio = noisy_audio.cuda()
                         X = (clean_audio, noisy_audio)
-                        loss, loss_dic = loss_fn(net, X, **loss_config, mrstftloss=mrstftloss)
+                        loss, loss_dic = loss_fn(net, X, **loss_config, mrstftloss=mrstftloss, use_mp=mp)
                         valid_loss += loss.item()
                     valid_loss /= len(validloader)
 
