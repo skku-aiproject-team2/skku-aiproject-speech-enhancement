@@ -41,7 +41,7 @@ def evaluate(clean_path, denoised_path):
 
         result['pesq_wb'] += pesq(16000, clean, denoised, 'wb') * length
         result['pesq_nb'] += pesq(16000, clean, denoised, 'nb') * length
-        result['stoi'] += stoi(clean, denoised, rate) * length
+        result['stoi'] += stoi(clean, denoised, 16000) * length
         result['count'] += 1 * length
     
     return result
