@@ -20,7 +20,9 @@ from scipy.io.wavfile import read as wavread
 
 from dataset import load_CleanNoisyPairDataset
 from util import rescale, find_max_epoch, print_size, sampling
-from network import CleanUNet, CleanUNet_bilinear
+from network import CleanUNet, CleanUNet_bilinear, CleanUNet_bilinear_lightConv
+
+import time
 
 
 def denoise(output_directory, ckpt_iter, subset, num, gpu, dump=False):
@@ -60,6 +62,8 @@ def denoise(output_directory, ckpt_iter, subset, num, gpu, dump=False):
     print(opt_config)
     if("bilinear" in opt_config.keys() and opt_config["bilinear"] == True):
         net = CleanUNet_bilinear(**network_config).to(device)
+    elif ("light_conv") in opt_config.keys() and opt_config["light_conv"]==True:
+        net = CleanUNet_bilinear_lightConv(**network_config).to(device)
     else:
         net = CleanUNet(**network_config).to(device)
     print_size(net)
