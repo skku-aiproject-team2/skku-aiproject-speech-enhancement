@@ -3,11 +3,13 @@
 ### online lectures in Sungkyunkwan University
 Many courses at Sungkyunkwan University are currently conducted through recorded online lectures, and even for offline classes, recorded lectures are often provided. However, most of these recordings are done in general classrooms or offices without proper audio equipment or noise control, rather than in a professional studio environment. This leads to the intrusion of student or external noise during lectures, resulting in poor audio quality, which in turn makes it difficult for students to follow the lectures and maintain concentration. This issue is particularly problematic for major courses conducted in English, where students who are not familiar with English speakers or technical terms may find it even harder to recognize pronunciations when noise is present. 
 
-### Our goal : cpu inference 최적화 정리되면 수정하기
+### Our goal : cpu inference
 We have selected CleanUNet(https://github.com/NVIDIA/CleanUNet) as the baseline model for audio enhancement. Our goal is to use this model to improve the audio quality and subsequently measure the improvement in audio clarity. Furthermore, we aim to enhance the performance of the baseline model and compare the results with the original CleanUNet baseline.
 
 
 ## Dataset Description
+
+We utilized two datasets in the project. The first is Valentini dataset which includes audio with no noise and the corresponding audio with synthetic audio merged. Valentini dataset was used for training and test to measure performance of the trained model. The latter dataset consists fo two audio files that range about 10 mins that are extracted from Youtube. This data was used to simulate how well our model works in real-time to enhance audio quality of the lectures in Sungkyunkwan University. 
 
 ### Overview of Valentini Dataset
 
@@ -46,17 +48,17 @@ The trained model's overfitting is evaluated on a separate test set named 'valid
 - `clean_testset_wav`: 824 files
 - `noisy_testset_wav`: 824 files
 
-#### Used for Training (5/26)
+#### Used for Training
 
 - `train/clean`: 23,075 files
 - `train/noisy`: 23,075 files
 
-#### Used for Evaluation (5/26)
+#### Used for Evaluation
 
 - `test/clean`: 412 files
 - `test/noisy`: 412 files
 
-#### Used for Overfitting Check (5/26)
+#### Used for Overfitting Check
 
 - `valid/clean`: 412 files
 - `valid/noisy`: 412 files
