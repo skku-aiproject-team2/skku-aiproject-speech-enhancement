@@ -52,7 +52,7 @@ from stft_loss import MultiResolutionSTFTLoss
 from util import rescale, find_max_epoch, print_size
 from util import LinearWarmupCosineDecay, loss_fn
 
-from network import CleanUNet, CleanUNet_bilinear
+from network import CleanUNet, CleanUNet_bilinear, CleanUNet_bilinear_v2
 
 
 def train(num_gpus, rank, group_name, 
@@ -95,6 +95,8 @@ def train(num_gpus, rank, group_name,
     # predefine model
     if("bilinear" in opt_config.keys() and opt_config["bilinear"] == True):
         net = CleanUNet_bilinear(**network_config).cuda()
+    elif("bilinear_v2" in opt_config.keys() and opt_config["bilinear_v2"] == True):
+        net = CleanUNet_bilinear_v2(**network_config).cuda()
     else:
         net = CleanUNet(**network_config).cuda()
     print_size(net)

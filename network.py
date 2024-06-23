@@ -526,7 +526,143 @@ class CleanUNet_bilinear(nn.Module):
 
         x = x[:, :, :L] * std
         return x
+class CleanUNet_bilinear_v2(nn.Module):
+    """ CleanUNet architecture. """
 
+    def __init__(self, channels_input=1, channels_output=1,
+                 channels_H=64, max_H=768,
+                 encoder_n_layers=8, kernel_size=4, stride=2,
+                 tsfm_n_layers=3, 
+                 tsfm_n_head=8,
+                 tsfm_d_model=512, 
+                 tsfm_d_inner=2048):
+        
+        """
+        Parameters:
+        channels_input (int):   input channels
+        channels_output (int):  output channels
+        channels_H (int):       middle channels H that controls capacity
+        max_H (int):            maximum H
+        encoder_n_layers (int): number of encoder/decoder layers D
+        kernel_size (int):      kernel size K
+        stride (int):           stride S
+        tsfm_n_layers (int):    number of self attention blocks N
+        tsfm_n_head (int):      number of heads in each self attention block
+        tsfm_d_model (int):     d_model of self attention
+        tsfm_d_inner (int):     d_inner of self attention
+        """
+
+        super(CleanUNet_bilinear_v2, self).__init__()
+
+        self.channels_input = channels_input
+        self.channels_output = channels_output
+        self.channels_H = channels_H
+        self.max_H = max_H
+        self.encoder_n_layers = encoder_n_layers
+        self.kernel_size = kernel_size
+        self.stride = stride
+
+        self.tsfm_n_layers = tsfm_n_layers
+        self.tsfm_n_head = tsfm_n_head
+        self.tsfm_d_model = tsfm_d_model
+        self.tsfm_d_inner = tsfm_d_inner
+        # encoder and decoder
+        self.encoder = nn.ModuleList()
+        self.decoder = nn.ModuleList()
+
+        print("The model is bilinear_v2")
+        for i in range(encoder_n_layers):
+            self.encoder.append(nn.Sequential(
+                nn.Conv1d(channels_input, channels_H, kernel_size, stride, padding=1),
+                nn.ReLU(),
+                nn.Conv1d(channels_H, channels_H * 2, 1), 
+                nn.GLU(dim=1)
+            ))
+            channels_input = channels_H
+            if i == 0:
+                # no relu at end
+                self.decoder.append(nn.Sequential(
+                    nn.Conv1d(channels_H, channels_H * 2, 1), 
+                    nn.GLU(dim=1),
+                    nn.Upsample(scale_factor=stride, mode='linear', align_corners=False),
+                    AverageChannels(factor=2),
+                    nn.Conv1d(channels_H//2, channels_output, kernel_size, padding='same')
+                ))
+            else:
+                self.decoder.insert(0, nn.Sequential(
+                    nn.Conv1d(channels_H, channels_H * 2, 1), 
+                    nn.GLU(dim=1),
+                    nn.Upsample(scale_factor=stride, mode='linear', align_corners=False),
+                    AverageChannels(factor=2),
+                    nn.Conv1d(channels_H//2, channels_output, kernel_size, padding='same'),
+                    nn.ReLU()
+                ))
+            channels_output = channels_H
+            
+            # double H but keep below max_H
+            channels_H *= 2
+            channels_H = min(channels_H, max_H)
+        
+        # self attention block
+        self.tsfm_conv1 = nn.Conv1d(channels_output, tsfm_d_model, kernel_size=1)
+        self.tsfm_encoder = TransformerEncoder(d_word_vec=tsfm_d_model, 
+                                               n_layers=tsfm_n_layers, 
+                                               n_head=tsfm_n_head, 
+                                               d_k=tsfm_d_model // tsfm_n_head, 
+                                               d_v=tsfm_d_model // tsfm_n_head, 
+                                               d_model=tsfm_d_model, 
+                                               d_inner=tsfm_d_inner, 
+                                               dropout=0.0, 
+                                               n_position=0, 
+                                               scale_emb=False)
+        self.tsfm_conv2 = nn.Conv1d(tsfm_d_model, channels_output, kernel_size=1)
+
+        # weight scaling initialization
+        for layer in self.modules():
+            if isinstance(layer, (nn.Conv1d, nn.ConvTranspose1d)):
+                weight_scaling_init(layer)
+    # @profile
+    def forward(self, noisy_audio):
+        # (B, L) -> (B, C, L)
+        if len(noisy_audio.shape) == 2:
+            noisy_audio = noisy_audio.unsqueeze(1)
+        B, C, L = noisy_audio.shape
+        assert C == 1
+        
+        # normalization and padding
+        std = noisy_audio.std(dim=2, keepdim=True) + 1e-3
+        noisy_audio /= std
+        x = padding1(noisy_audio, self.encoder_n_layers, self.kernel_size, self.stride)
+        # encoder
+        skip_connections = []
+        # print("start of encoder: ",x.shape)
+        for downsampling_block in self.encoder:
+            x = downsampling_block(x)
+            skip_connections.append(x)
+            # print(x.shape)
+        skip_connections = skip_connections[::-1]
+
+        # attention mask for causal inference; for non-causal, set attn_mask to None
+        len_s = x.shape[-1]  # length at bottleneck
+        attn_mask = (1 - torch.triu(torch.ones((1, len_s, len_s), device=x.device), diagonal=1)).bool()
+
+        x = self.tsfm_conv1(x)  # C 1024 -> 512
+        x = x.permute(0, 2, 1)
+        x = self.tsfm_encoder(x, src_mask=attn_mask)
+        x = x.permute(0, 2, 1)
+        x = self.tsfm_conv2(x)  # C 512 -> 1024
+
+        # decoder
+        # print("start of decoder: ",x.shape)
+        for i, upsampling_block in enumerate(self.decoder):
+            skip_i = skip_connections[i]
+            x = x + skip_i[:, :, :x.shape[-1]]
+            x = upsampling_block(x)
+            # print(x.shape)
+
+
+        x = x[:, :, :L] * std
+        return x
 
 if __name__ == '__main__':
     import json
