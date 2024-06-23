@@ -54,7 +54,7 @@ from util import LinearWarmupCosineDecay, loss_fn
 
 from torch.cuda.amp import GradScaler, autocast
 
-from network import CleanUNet, CleanUNet_bilinear, CleanUNet_bilinear_lightConv, CleanUNet_lightConv
+from network import CleanUNet, CleanUNet_bilinear,CleanUNet_bilinear_v2, CleanUNet_bilinear_lightConv, CleanUNet_lightConv
 
 
 def train(num_gpus, rank, group_name, 
@@ -97,6 +97,8 @@ def train(num_gpus, rank, group_name,
     # predefine model
     if("bilinear" in opt_config.keys() and opt_config["bilinear"] == True):
         net = CleanUNet_bilinear(**network_config).cuda()
+    elif("bilinear_v2" in opt_config.keys() and opt_config["bilinear_v2"] == True):
+        net = CleanUNet_bilinear_v2(**network_config).cuda()
         mp = True
     elif ("biliear+light_conv") in opt_config.keys() and opt_config["biliear+light_conv"]==True:
         net = CleanUNet_bilinear_lightConv(**network_config).cuda()
