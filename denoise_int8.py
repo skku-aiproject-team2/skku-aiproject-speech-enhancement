@@ -3,6 +3,7 @@ import argparse
 import json
 from tqdm import tqdm
 from copy import deepcopy
+import time
 
 import numpy as np
 import torch
@@ -20,9 +21,16 @@ from scipy.io.wavfile import read as wavread
 
 from dataset import load_CleanNoisyPairDataset
 from util import rescale, find_max_epoch, print_size, sampling
-from network import CleanUNet, CleanUNet_bilinear, CleanUNet_bilinear_v2, CleanUNet_bilinear_lightConv, CleanUNet_lightConv
+from network import CleanUNet, CleanUNet_bilinear, CleanUNet_bilinear_lightConv, CleanUNet_lightConv
 
-import time
+import torch.ao.quantization
+
+def print_size_of_model(model, label=""):
+    torch.save(model.state_dict(), "temp.p")
+    size=os.path.getsize("temp.p")
+    print("model: ",label,' \t','Size (KB):', size/1e3)
+    os.remove('temp.p')
+    return size
 
 
 def denoise(output_directory, ckpt_iter, subset, num, gpu, dump=False):
@@ -62,8 +70,6 @@ def denoise(output_directory, ckpt_iter, subset, num, gpu, dump=False):
     print(opt_config)
     if("bilinear" in opt_config.keys() and opt_config["bilinear"] == True):
         net = CleanUNet_bilinear(**network_config).to(device)
-    elif("bilinear_v2" in opt_config.keys() and opt_config["bilinear_v2"] == True):
-        net = CleanUNet_bilinear_v2(**network_config).to(device)
     elif ("biliear+light_conv") in opt_config.keys() and opt_config["biliear+light_conv"]==True:
         net = CleanUNet_bilinear_lightConv(**network_config).to(device)
     elif ("vanilla+light_conv") in opt_config.keys() and opt_config["vanilla+light_conv"]==True:
@@ -83,6 +89,17 @@ def denoise(output_directory, ckpt_iter, subset, num, gpu, dump=False):
     checkpoint = torch.load(model_path, map_location='cpu')
     net.load_state_dict(checkpoint['model_state_dict'])
     net.eval()
+
+    torch.backends.quantized.engine = 'x86'
+    f=print_size_of_model(net,"fp32")
+    net = torch.ao.quantization.quantize_dynamic(
+        net,                # the original model
+        {nn.Linear},  # a set of layers to dynamically quantize
+        dtype=torch.qint8   # the target dtype for quantized weights
+    )
+
+    q=print_size_of_model(net,"int8")
+    print("{0:.2f} times smaller".format(f/q))
 
     # get output directory ready
     if ckpt_iter == "pretrained":

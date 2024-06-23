@@ -52,7 +52,9 @@ from stft_loss import MultiResolutionSTFTLoss
 from util import rescale, find_max_epoch, print_size
 from util import LinearWarmupCosineDecay, loss_fn
 
-from network import CleanUNet, CleanUNet_bilinear, CleanUNet_bilinear_v2
+from torch.cuda.amp import GradScaler, autocast
+
+from network import CleanUNet, CleanUNet_bilinear,CleanUNet_bilinear_v2, CleanUNet_bilinear_lightConv, CleanUNet_lightConv
 
 
 def train(num_gpus, rank, group_name, 
@@ -97,8 +99,16 @@ def train(num_gpus, rank, group_name,
         net = CleanUNet_bilinear(**network_config).cuda()
     elif("bilinear_v2" in opt_config.keys() and opt_config["bilinear_v2"] == True):
         net = CleanUNet_bilinear_v2(**network_config).cuda()
+        mp = True
+    elif ("biliear+light_conv") in opt_config.keys() and opt_config["biliear+light_conv"]==True:
+        net = CleanUNet_bilinear_lightConv(**network_config).cuda()
+        mp = False
+    elif ("vanilla+light_conv") in opt_config.keys() and opt_config["vanilla+light_conv"]==True:
+        net = CleanUNet_lightConv(**network_config).cuda()
+        mp = False
     else:
         net = CleanUNet(**network_config).cuda()
+        mp = False
     print_size(net)
 
     # apply gradient all reduce
@@ -107,6 +117,7 @@ def train(num_gpus, rank, group_name,
 
     # define optimizer
     optimizer = torch.optim.Adam(net.parameters(), lr=optimization["learning_rate"])
+    scaler = GradScaler()
 
     # load checkpoint
     time0 = time.time()
@@ -114,6 +125,7 @@ def train(num_gpus, rank, group_name,
         ckpt_iter = find_max_epoch(ckpt_directory)
     else:
         ckpt_iter = log["ckpt_iter"]
+
     if ckpt_iter >= 0:
         try:
             # load checkpoint file
@@ -155,6 +167,7 @@ def train(num_gpus, rank, group_name,
         mrstftloss = None
     
     pbar = tqdm(total=optimization["n_iters"], initial=n_iter, dynamic_ncols=True)
+    
     while n_iter < optimization["n_iters"] + 1:
         # for each epoch
         for clean_audio, noisy_audio, _ in trainloader: 
@@ -170,16 +183,23 @@ def train(num_gpus, rank, group_name,
             # back-propagation
             optimizer.zero_grad()
             X = (clean_audio, noisy_audio)
-            loss, loss_dic = loss_fn(net, X, **loss_config, mrstftloss=mrstftloss)
+            loss, loss_dic = loss_fn(net, X, **loss_config, mrstftloss=mrstftloss, use_mp = mp)
             if num_gpus > 1:
                 reduced_loss = reduce_tensor(loss.data, num_gpus).item()
             else:
                 reduced_loss = loss.item()
-            loss.backward()
-            grad_norm = nn.utils.clip_grad_norm_(net.parameters(), 1e9)
-            scheduler.step()
-            optimizer.step()
-
+            
+            if mp:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+                scheduler.step()
+            else:
+                loss.backward()
+                grad_norm = nn.utils.clip_grad_norm_(net.parameters(), 1e9)
+                scheduler.step()
+                optimizer.step()
+                
             # output to log
             if n_iter % log["iters_per_valid"] == 0:
 
@@ -190,7 +210,7 @@ def train(num_gpus, rank, group_name,
                         clean_audio = clean_audio.cuda()
                         noisy_audio = noisy_audio.cuda()
                         X = (clean_audio, noisy_audio)
-                        loss, loss_dic = loss_fn(net, X, **loss_config, mrstftloss=mrstftloss)
+                        loss, loss_dic = loss_fn(net, X, **loss_config, mrstftloss=mrstftloss, use_mp=mp)
                         valid_loss += loss.item()
                     valid_loss /= len(validloader)
 
@@ -202,7 +222,7 @@ def train(num_gpus, rank, group_name,
                 tb.add_scalar("Valid/Valid-Loss", valid_loss, n_iter)
                 tb.add_scalar("Train/Train-Loss", loss.item(), n_iter)
                 tb.add_scalar("Train/Train-Reduced-Loss", reduced_loss, n_iter)
-                tb.add_scalar("Train/Gradient-Norm", grad_norm, n_iter)
+                # tb.add_scalar("Train/Gradient-Norm", grad_norm, n_iter)
                 tb.add_scalar("Train/learning-rate", optimizer.param_groups[0]["lr"], n_iter)
 
             # save checkpoint

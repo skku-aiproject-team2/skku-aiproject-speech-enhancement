@@ -26,11 +26,12 @@ class CleanNoisyPairDataset(Dataset):
     Each element is a tuple of the form (clean waveform, noisy waveform, file_id)
     """
     
-    def __init__(self, root='./', subset='training', crop_length_sec=0):
+    def __init__(self, root='./', subset='training', crop_length_sec=0, sample_rate=48000):
         super(CleanNoisyPairDataset).__init__()
 
         assert subset is None or subset in ["training", "testing", "validation"]
         self.crop_length_sec = crop_length_sec
+        self.sample_rate = sample_rate
         self.subset = subset
         
         N_clean = len(os.listdir(os.path.join(root, 'train/clean')))
@@ -53,15 +54,24 @@ class CleanNoisyPairDataset(Dataset):
 
     def __getitem__(self, n):
         fileid = self.files[n]
-        clean_audio, sample_rate = torchaudio.load(fileid[0])
-        noisy_audio, sample_rate = torchaudio.load(fileid[1])
+        clean_audio, sample_rate_clean = torchaudio.load(fileid[0])
+        noisy_audio, sample_rate_noisy = torchaudio.load(fileid[1])
         clean_audio, noisy_audio = clean_audio.squeeze(0), noisy_audio.squeeze(0)
-        assert len(clean_audio) == len(noisy_audio)
+        assert len(clean_audio) == len(noisy_audio) and sample_rate_clean == sample_rate_noisy
 
-        crop_length = int(self.crop_length_sec * sample_rate)
+        # resample audios to self.sample_rate
+        if sample_rate_clean != self.sample_rate:
+            resample = torchaudio.transforms.Resample(orig_freq=sample_rate_clean, new_freq=self.sample_rate)
+            clean_audio = resample(clean_audio)
+            noisy_audio = resample(noisy_audio)
+
+        crop_length = int(self.crop_length_sec * self.sample_rate)
         
         if crop_length > len(clean_audio):
-            crop_length = len(clean_audio)
+            # repeat the audio to match the crop length
+            n_repeats = crop_length // len(clean_audio) + 1
+            clean_audio = clean_audio.repeat(n_repeats)
+            noisy_audio = noisy_audio.repeat(n_repeats)
 
         # random crop
         if self.subset != 'testing' and crop_length > 0:
@@ -80,7 +90,7 @@ def load_CleanNoisyPairDataset(root, subset, crop_length_sec, batch_size, sample
     """
     Get dataloader with distributed sampling
     """
-    dataset = CleanNoisyPairDataset(root=root, subset=subset, crop_length_sec=crop_length_sec)                                                       
+    dataset = CleanNoisyPairDataset(root=root, subset=subset, crop_length_sec=crop_length_sec, sample_rate=sample_rate)                                                       
     kwargs = {"batch_size": batch_size, "num_workers": 4, "pin_memory": False, "drop_last": False}
 
     if num_gpus > 1:

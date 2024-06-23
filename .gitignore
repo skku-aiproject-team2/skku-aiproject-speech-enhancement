@@ -2,3 +2,8 @@ __pycache__/
 exp/
 logs/
 **/*.wav
+wandb/
+.ipynb_checkpoints
+configs/.ipynb_checkpoints
+node_modules/
+configs/

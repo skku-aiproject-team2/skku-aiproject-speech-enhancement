@@ -41,8 +41,8 @@
     },
     "trainset_config": {
         "root": "../CleanUNet/dataset_mini",
-        "crop_length_sec": 1,
-        "sample_rate": 48000
+        "crop_length_sec": 3,
+        "sample_rate": 16000
     },
     "gen_config":{
         "output_directory": "./exp"
